@@ -1,0 +1,10 @@
+.rea/
+.playwright-mcp/
+opencode.json
+.build/
+build/
+investigation/private/
+investigation/extracted/
+investigation/evidence/
+node_modules/
+.DS_Store
