@@ -8,6 +8,21 @@ const {X509Certificate} = require('node:crypto');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 
+/** @param {number} pid @param {string} [selection] @returns {string[]} */
+function nativeWindowMenu(pid,selection) {
+  const action=selection
+    ? `click menu item ${JSON.stringify(selection)} of menu 1 of menu bar item "Window" of menu bar 1\nreturn "selected"`
+    : 'set entries to name of every menu item of menu 1 of menu bar item "Window" of menu bar 1\nclick menu bar item "Window" of menu bar 1\nreturn entries';
+  const script=`tell application "System Events"
+    tell (first application process whose unix id is ${pid})
+      set frontmost to true
+      click menu bar item "Window" of menu bar 1
+      ${action}
+    end tell
+  end tell`;
+  return execFileSync('osascript',['-e',script],{encoding:'utf8',timeout:15000}).trim().split(', ');
+}
+
 async function run() {
   const temporaryRoot=path.resolve('investigation/private/tmp');
   await mkdir(temporaryRoot,{recursive:true,mode:0o700});
@@ -50,6 +65,29 @@ async function run() {
     }
     assert.equal((await inventory.evaluate(()=>window.workspace.list())).sessions.length,3);
     report.checks.push('three simultaneous independent native session windows');
+    const titles=await Promise.all(windows.map(async page=>(await electron.browserWindow(page)).evaluate(win=>win.getTitle())));
+    const menu=nativeWindowMenu(electron.process().pid);
+    for(const title of titles) assert(menu.includes(title),`Native Window menu must list ${title}; received ${JSON.stringify(menu)}`);
+    await (await electron.browserWindow(windows[0])).evaluate(win=>win.minimize());
+    nativeWindowMenu(electron.process().pid,titles[0]);
+    await (await electron.browserWindow(windows[0])).evaluate(async win=>{
+      const deadline=Date.now()+5000;
+      while(Date.now()<deadline) {
+        if(!win.isMinimized() && win.isFocused()) return;
+        await new Promise(resolve=>setTimeout(resolve,50));
+      }
+      throw new Error('Selecting a Window menu entry must restore and focus its native window');
+    });
+    await windows[2].close();
+    assert.equal(nativeWindowMenu(electron.process().pid).includes(titles[2]),false,'Closed sessions must leave the native Window menu');
+    const menuReopen=electron.waitForEvent('window');
+    await inventory.evaluate(()=>window.workspace.open('2','lan'));
+    windows[2]=await menuReopen;
+    await windows[2].waitForURL(endpoint+'/');
+    await windows[2].locator('#stream-box').waitFor();
+    assert(nativeWindowMenu(electron.process().pid).includes(titles[2]),'Reopened sessions must return to the native Window menu');
+    report.checks.push('native Window menu lists sessions, restores/focuses selections, and tracks close/reopen');
+    if(process.argv.includes('--menu-only')) {console.log(JSON.stringify(report,null,2));return;}
     assert.equal(await windows[0].evaluate(()=>headCaptureInstalled),true);
     report.checks.push('capture wrapper installed before firmware document scripts');
     await windows[0].evaluate(async url=>{try{await fetch(url,{mode:'no-cors'});}catch{}},otherEndpoint);

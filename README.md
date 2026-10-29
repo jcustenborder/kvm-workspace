@@ -102,6 +102,16 @@ npm run test:inventory
 npm run test:windows
 ```
 
+For a focused native Window-menu check:
+
+```sh
+node scripts/validate-windows.cjs --menu-only
+```
+
+It verifies session entries, selection/restoration of minimized windows, and
+close/reopen updates using macOS System Events. The test runner needs macOS
+Accessibility permission; the application itself uses the standard native menu.
+
 The inventory check uses actual Add/Edit/Save/Cancel/Remove buttons in the
 packaged application with a disposable profile and verifies restart persistence.
 The window check exercises the **packaged application** with synthetic HTTPS pages,

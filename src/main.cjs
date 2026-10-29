@@ -285,7 +285,7 @@ app.whenReady().then(async () => {
       {label:'Choose Microphone on Next Capture',click:() => { const item=focusedSession(); if(item) void item.window.webContents.executeJavaScript('window.__workspaceCapture?.resetMicrophone()').catch(report); }},
       {label:'Choose Local Speaker…',click:() => { const item=focusedSession(); if(item) void item.window.webContents.executeJavaScript('window.__workspaceCapture?.chooseSpeaker()',true).catch(report); }},
       {role:'togglefullscreen'},{role:'toggleDevTools'}]},
-    {label:'Window',submenu:[{role:'minimize'},{role:'zoom'},{type:'separator'},{role:'front'}]}
+    {role:'windowMenu'}
   ]));
   showInventory();
   app.on('activate',showInventory);

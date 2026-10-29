@@ -19,6 +19,8 @@
   cross-port TLS boundary, route conflicts, atomic-write failure rollback,
   held modifier release without broadcasting, resize/reload isolation, close/
   reopen cleanup, auxiliary-window teardown and retryable credential deletion.
+  A native macOS Window-menu regression verifies session titles, selection and
+  restoration of minimized windows, and removal/reappearance on close/reopen.
   Synthetic pages are not presented as three real devices.
 - One real RM1PE: password authentication, WebRTC H.264 1920×1080, observed
   VideoToolbox power-efficient decoding, continued unfocused video, actual binary
