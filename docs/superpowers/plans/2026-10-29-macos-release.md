@@ -3,8 +3,9 @@
 **Goal:** Make a signed, notarized Apple Silicon DMG the preferred installation,
 with packaged-app PR verification and stable releases only from `main`.
 
-**Architecture:** Keep Electron Packager and its integrated macOS signing and
-notarization. Use GitHub-hosted macOS runners and native disk-image tools. PRs
+**Architecture:** Keep Electron Packager for macOS signing and use explicit native
+`notarytool` submission/wait/status steps with visible submission IDs and bounded
+waits. Use GitHub-hosted macOS runners and native disk-image tools. PRs
 build ad-hoc artifacts without secrets; pushes to `main` publish notarized DMGs.
 Automatic patch versions start at the package version, advance past reserved
 stable release tags, and reuse existing drafts or published releases on reruns.
@@ -16,8 +17,9 @@ Intel support, branch prereleases, new runtime dependencies, or automatic commit
 ## Tasks and acceptance
 
 - [x] Add an explicit `--release` packaging mode in `scripts/package.mjs`.
-  Require signing identity, keychain, and Apple credentials before packaging;
-  use Packager's nested signing and notarization, verify signature/ticket/Gatekeeper,
+  Require signing identity and keychain before packaging, and Apple credentials
+  before the separate notarization step;
+  use Packager's nested signing, then native notarization and ticket/Gatekeeper checks,
   and never overwrite distribution signatures with the local ad-hoc signature.
   Check: `node --test tests/package.test.cjs` proves missing credentials fail closed.
 - [x] Add `.github/workflows/release-macos.yml` for pushes to `main`.
