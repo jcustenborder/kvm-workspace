@@ -173,7 +173,13 @@ Configure these repository Actions secrets:
 Never commit certificates or private keys. The workflow imports the certificate
 into a temporary keychain and deletes the keychain and certificate file afterward.
 Electron Packager signs nested helpers with its Electron entitlements and hardened
-runtime, then notarizes and staples the application. The workflow verifies the
+runtime. Signing has its own ten-minute step with verbose per-file diagnostics.
+A separate step submits the application to Apple, prints its submission ID
+immediately, and streams Apple's processing status with a twenty-minute wait limit.
+The DMG uses the same submission/status process. Apple submission IDs, status and
+available rejection logs are retained as workflow artifacts for seven days, including
+on failure. A wait timeout does not cancel Apple's server-side processing.
+The workflow staples the application and verifies the
 signed inventory UI, creates a DMG with an Applications shortcut, signs/notarizes/
 staples it, mounts it, and validates the contained application before publishing.
 Signing, notarization, or Gatekeeper failures stop publication. Release assets

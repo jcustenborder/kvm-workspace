@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: release-main
   cancel-in-progress: false
@@ -88,15 +92,42 @@ jobs:
             }
             fs.appendFileSync(process.env.GITHUB_ENV,`MACOS_SIGNING_IDENTITY=${identities[0]}\nMACOS_SIGNING_KEYCHAIN=${process.env.RUNNER_TEMP}/release.keychain-db\n`);
           NODE
-      - name: Sign, notarize and verify application
+      - name: Sign and verify application
+        timeout-minutes: 10
+        env:
+          DEBUG: electron-osx-sign
+        run: npm run package -- --release
+      - name: Submit application to Apple and wait for notarization
+        timeout-minutes: 25
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: npm run package -- --release
+        run: |
+          : "${APPLE_ID:?Missing Apple ID}"
+          : "${APPLE_TEAM_ID:?Missing Apple Team ID}"
+          : "${APPLE_APP_SPECIFIC_PASSWORD:?Missing app-specific password}"
+          APP="build/KVM Workspace-darwin-arm64/KVM Workspace.app"
+          AUTH=(--apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD")
+          ditto -c -k --sequesterRsrc --keepParent "$APP" build/application.zip
+          xcrun notarytool submit build/application.zip "${AUTH[@]}" --no-wait --output-format json | tee build/application-submission.json
+          SUBMISSION_ID="$(node -p 'JSON.parse(require("fs").readFileSync("build/application-submission.json","utf8")).id')"
+          echo "::notice::Application submission $SUBMISSION_ID; waiting up to 20 minutes for Apple."
+          if ! xcrun notarytool wait "$SUBMISSION_ID" "${AUTH[@]}" --timeout 20m; then
+            echo "::warning::Apple wait ended unsuccessfully; retrieving the submission status."
+          fi
+          xcrun notarytool info "$SUBMISSION_ID" "${AUTH[@]}" --output-format json | tee build/application-notarization.json
+          if ! node -e 'const result=require("./build/application-notarization.json"); if(result.status!=="Accepted") throw new Error("Application notarization: "+result.status+"; submission: "+result.id);'; then
+            xcrun notarytool log "$SUBMISSION_ID" "${AUTH[@]}" | tee build/application-notarization.log.json
+            exit 1
+          fi
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+          spctl --assess --type execute --verbose=2 "$APP"
       - name: Verify notarized application inventory UI
         run: npm run test:inventory
       - name: Create, sign and notarize DMG
+        timeout-minutes: 25
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -109,15 +140,16 @@ jobs:
           DMG="build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg"
           hdiutil create -volname "KVM Workspace" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
           codesign --sign "$MACOS_SIGNING_IDENTITY" --keychain "$MACOS_SIGNING_KEYCHAIN" --timestamp "$DMG"
-          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait --timeout 20m --output-format json > "$RUNNER_TEMP/notarization.json"
-          if ! node --input-type=module <<'NODE'
-            import fs from "node:fs";
-            const result=JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/notarization.json`,"utf8"));
-            if(result.status!=="Accepted") throw new Error(`Notarization status: ${result.status}; submission: ${result.id}`);
-          NODE
-          then
-            SUBMISSION_ID="$(node -p 'JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP+"/notarization.json","utf8")).id')"
-            xcrun notarytool log "$SUBMISSION_ID" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD"
+          AUTH=(--apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD")
+          xcrun notarytool submit "$DMG" "${AUTH[@]}" --no-wait --output-format json | tee build/dmg-submission.json
+          SUBMISSION_ID="$(node -p 'JSON.parse(require("fs").readFileSync("build/dmg-submission.json","utf8")).id')"
+          echo "::notice::DMG submission $SUBMISSION_ID; waiting up to 20 minutes for Apple."
+          if ! xcrun notarytool wait "$SUBMISSION_ID" "${AUTH[@]}" --timeout 20m; then
+            echo "::warning::Apple wait ended unsuccessfully; retrieving the submission status."
+          fi
+          xcrun notarytool info "$SUBMISSION_ID" "${AUTH[@]}" --output-format json | tee build/dmg-notarization.json
+          if ! node -e 'const result=require("./build/dmg-notarization.json"); if(result.status!=="Accepted") throw new Error("DMG notarization: "+result.status+"; submission: "+result.id);'; then
+            xcrun notarytool log "$SUBMISSION_ID" "${AUTH[@]}" | tee build/dmg-notarization.log.json
             exit 1
           fi
           xcrun stapler staple "$DMG"
@@ -168,6 +200,16 @@ jobs:
               --target "$GITHUB_SHA" --draft --title "KVM Workspace $RELEASE_TAG" --generate-notes
           fi
           gh release edit "$RELEASE_TAG" --draft=false --latest
+      - name: Preserve Apple submission IDs, status and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notarization-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/*submission.json
+            build/*notarization*.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Remove signing credentials
         if: always()
         run: |
