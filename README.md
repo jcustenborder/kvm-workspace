@@ -148,9 +148,17 @@ notarized DMG distribution. PR jobs never receive signing or Apple credentials.
 
 ### Publish a signed DMG
 
-The `Release macOS DMG` workflow runs when a `v*` tag is pushed. It requires a
-stable `vX.Y.Z` tag matching `package.json`, with its commit on `main`. It rejects
-prerelease versions and existing releases. It does not publish branch builds.
+The `Release macOS DMG` workflow runs automatically on pushes to `main`, including
+merged pull requests. Each successful run publishes a stable GitHub Release with
+the signed, notarized DMG and its checksum attached. No manual tag is required;
+other branches do not publish releases.
+
+The first release starts at the stable version in `package.json`. Subsequent
+releases increment the highest reserved stable release's patch number, for example
+`v0.1.0`, `v0.1.1`, `v0.1.2`. Raising `package.json` to a newer version sets a new
+minimum. The chosen version is embedded in the packaged app without committing
+version changes back to the repository. Release jobs are serialized to avoid
+allocating the same version concurrently.
 
 Configure these repository Actions secrets:
 
@@ -171,18 +179,15 @@ staples it, mounts it, and validates the contained application before publishing
 Signing, notarization, or Gatekeeper failures stop publication. Release assets
 include the DMG and a `.sha256` checksum.
 
-After merging a version change to `main`, publish that exact commit:
+The workflow creates a tag at the exact triggering commit and publishes the
+release only after the DMG and checksum have been uploaded. A rerun skips an
+already published release for that commit, or resumes an incomplete draft using
+the same version. After correcting credentials or a transient Apple service
+failure, use **Re-run failed jobs** in GitHub Actions.
 
-```sh
-git switch main
-git pull --ff-only
-git tag v0.1.0  # Must match package.json; use the next unused version.
-git push origin v0.1.0
-```
-
-Protect `main` and restrict release-tag creation to maintainers: tagged code runs
-with signing credentials. After the first release, download its DMG through a
-browser and confirm drag-to-Applications installation and launch on a Mac.
+Protect `main`: merged code runs with signing credentials. After the first release,
+download its DMG through a browser and confirm drag-to-Applications installation
+and launch on a Mac.
 
 ### Real-device validation
 
