@@ -2,21 +2,48 @@ name: Release macOS DMG
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-main
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      published: ${{ steps.version.outputs.published }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Select the next patch version or reuse this commit's release
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --slurp > "$RUNNER_TEMP/releases.json"
+          node scripts/release-version.cjs "$RUNNER_TEMP/releases.json"
   release:
+    needs: prepare
+    if: needs.prepare.outputs.published != 'true'
     runs-on: macos-15
     timeout-minutes: 60
     permissions:
       contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,24 +53,6 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - name: Require a stable version tag on main
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git merge-base --is-ancestor HEAD origin/main
-          node --input-type=module <<'NODE'
-            import fs from "node:fs";
-            const version=JSON.parse(fs.readFileSync("package.json","utf8")).version;
-            if(!/^\d+\.\d+\.\d+$/.test(version) || process.env.RELEASE_TAG!==`v${version}`) {
-              throw new Error("Release tag must equal v<package.json version>, without a prerelease suffix");
-            }
-          NODE
-          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq '.[].tag_name' > "$RUNNER_TEMP/release-tags"
-          if /usr/bin/grep -Fxq "$RELEASE_TAG" "$RUNNER_TEMP/release-tags"; then
-            echo "Release already exists: $RELEASE_TAG" >&2
-            exit 1
-          fi
       - run: npm ci
       - run: npm test
       - name: Build and verify application before signing
@@ -92,7 +101,6 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           STAGING="$RUNNER_TEMP/dmg-root"
           mkdir "$STAGING"
@@ -128,12 +136,38 @@ jobs:
       - name: Publish verified DMG
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$RELEASE_TAG" \
-            "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg" \
-            "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg.sha256" \
-            --verify-tag --title "KVM Workspace $RELEASE_TAG" --generate-notes
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            if test "$(git rev-parse "$RELEASE_TAG^{commit}")" != "$GITHUB_SHA"; then
+              echo "Release tag already points to a different commit: $RELEASE_TAG" >&2
+              exit 1
+            fi
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --slurp > "$RUNNER_TEMP/current-releases.json"
+          STATE="$(node <<'NODE'
+            const {readFileSync}=require('node:fs');
+            const {planRelease}=require('./scripts/release-version.cjs');
+            const releases=JSON.parse(readFileSync(process.env.RUNNER_TEMP+'/current-releases.json','utf8')).flat();
+            const plan=planRelease(process.env.RELEASE_VERSION,releases,process.env.GITHUB_SHA);
+            if(plan.tag!==process.env.RELEASE_TAG) throw new Error('Release version changed during the build');
+            console.log(plan.published ? 'published' : plan.exists ? 'draft' : 'new');
+          NODE
+          )"
+          if test "$STATE" = published; then
+            echo "Release already published: $RELEASE_TAG"
+            exit 0
+          fi
+          if test "$STATE" = draft; then
+            gh release upload "$RELEASE_TAG" \
+              "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg" \
+              "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg.sha256" --clobber
+          else
+            gh release create "$RELEASE_TAG" \
+              "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg" \
+              "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg.sha256" \
+              --target "$GITHUB_SHA" --draft --title "KVM Workspace $RELEASE_TAG" --generate-notes
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false --latest
       - name: Remove signing credentials
         if: always()
         run: |

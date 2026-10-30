@@ -8,6 +8,7 @@ if(release) {
 }
 const paths = await packager({
   dir:process.cwd(),out:'build',name:'KVM Workspace',platform:'darwin',arch:'arm64',
+  appVersion:process.env.RELEASE_VERSION,
   appBundleId:'com.scarcemedia.kvm-workspace',appCategoryType:'public.app-category.utilities',
   overwrite:true,asar:true,prune:true,
   ignore:[/^\/\.rea(?:\/|$)/,/^\/investigation(?:\/|$)/,/^\/docs(?:\/|$)/,/^\/tests(?:\/|$)/,/^\/scripts(?:\/|$)/,/^\/\.playwright-mcp(?:\/|$)/,/^\/opencode\.json$/,/^\/\.git(?:hub)?(?:\/|$)/,/^\/build(?:\/|$)/],
