@@ -1,0 +1,48 @@
+name: Verify macOS application
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run package
+      - name: Exercise packaged inventory UI and restart persistence
+        run: npm run test:inventory
+      - name: Exercise synthetic TLS sessions and window isolation
+        run: npm run test:windows -- --ci
+      - name: Archive application for manual inspection
+        run: ditto -c -k --sequesterRsrc --keepParent "build/KVM Workspace-darwin-arm64/KVM Workspace.app" build/KVM-Workspace-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KVM-Workspace-macos-arm64-${{ github.sha }}
+          path: build/KVM-Workspace-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-results-${{ github.sha }}
+          path: investigation/private/window-validation.json
+          if-no-files-found: ignore
+          retention-days: 7

@@ -12,18 +12,30 @@ Opus microphone/speaker transport across a two-minute focus/resize test.
 Three-window isolation has passed a synthetic-page test.
 Three distinct real devices and a sustained conference call remain unvalidated.
 
+## Install (recommended)
+
+Download the **macOS Apple Silicon DMG** from the
+[latest GitHub release](https://github.com/jcustenborder/kvm-workspace/releases/latest).
+Open the DMG, drag **KVM Workspace.app** onto **Applications**, eject the disk
+image, then open KVM Workspace from Applications. No Node.js installation is
+needed. Release DMGs and applications are Developer ID signed and notarized by
+Apple. Until the first release is published, use the source-build instructions below.
+
+To update, quit KVM Workspace and replace the application using the newer DMG.
+Your saved devices remain in Application Support. Automatic updates are not yet
+implemented. Releases currently target Apple Silicon; Intel Macs are not supported.
+
 ## Run
 
-The verified local installation is:
+Open the installed application:
 
 ```sh
-open "$HOME/Applications/KVM Workspace.app"
+open "/Applications/KVM Workspace.app"
 ```
 
-It has the provided KVM saved as **RM1PE — Home**. Real-device saved-login
-restoration was verified with Keychain-encrypted tokens. Source builds start
-with an empty inventory. The standalone `.app` needs no external Node.js or REA
-installation to run.
+New installations start with an empty inventory. Real-device saved-login
+restoration was verified with Keychain-encrypted tokens. The standalone `.app`
+needs no external Node.js or REA installation to run.
 
 The build output is also runnable:
 
@@ -95,7 +107,8 @@ npm run package
 ```
 
 Packaging creates an arm64 `.app`, applies a local ad-hoc code signature, and
-verifies the full bundle. This is a local build, not a notarized distribution.
+verifies the full bundle. This is a local build, not a notarized distribution;
+published DMGs use the signed release process described below.
 
 ```sh
 npm run test:inventory
@@ -117,6 +130,61 @@ packaged application with a disposable profile and verifies restart persistence.
 The window check exercises the **packaged application** with synthetic HTTPS pages,
 including actual TLS, native windows, filesystem failures and Keychain-backed
 token encryption. It does not represent three real KVMs.
+
+### Continuous integration
+
+Pull requests and pushes to `main` run unit tests and build the Apple Silicon
+application on macOS. They exercise the packaged inventory UI and synthetic
+HTTPS sessions with `npm run test:windows -- --ci`, including certificate pin
+isolation, separate session storage, input release, reload/close/reopen, and
+filesystem failure handling. The `--ci` mode explicitly skips native-menu
+Accessibility automation and interactive Keychain encryption/restoration;
+run `npm run test:windows` locally for those checks. No real-device, camera,
+microphone, or sustained-call validation is claimed by CI.
+
+Successful verification runs upload an ad-hoc-signed application ZIP for manual
+inspection, retained for seven days. These are development artifacts, not the
+notarized DMG distribution. PR jobs never receive signing or Apple credentials.
+
+### Publish a signed DMG
+
+The `Release macOS DMG` workflow runs when a `v*` tag is pushed. It requires a
+stable `vX.Y.Z` tag matching `package.json`, with its commit on `main`. It rejects
+prerelease versions and existing releases. It does not publish branch builds.
+
+Configure these repository Actions secrets:
+
+| Secret | Value |
+| --- | --- |
+| `MACOS_CERTIFICATE_P12_BASE64` | Base64-encoded Developer ID Application certificate **with its private key** |
+| `MACOS_CERTIFICATE_PASSWORD` | Password chosen when exporting the `.p12`; may be empty for a passwordless export |
+| `APPLE_ID` | Apple Developer account email |
+| `APPLE_TEAM_ID` | Team ID owning the certificate |
+| `APPLE_APP_SPECIFIC_PASSWORD` | Apple Account app-specific password for notarization |
+
+Never commit certificates or private keys. The workflow imports the certificate
+into a temporary keychain and deletes the keychain and certificate file afterward.
+Electron Packager signs nested helpers with its Electron entitlements and hardened
+runtime, then notarizes and staples the application. The workflow verifies the
+signed inventory UI, creates a DMG with an Applications shortcut, signs/notarizes/
+staples it, mounts it, and validates the contained application before publishing.
+Signing, notarization, or Gatekeeper failures stop publication. Release assets
+include the DMG and a `.sha256` checksum.
+
+After merging a version change to `main`, publish that exact commit:
+
+```sh
+git switch main
+git pull --ff-only
+git tag v0.1.0  # Must match package.json; use the next unused version.
+git push origin v0.1.0
+```
+
+Protect `main` and restrict release-tag creation to maintainers: tagged code runs
+with signing credentials. After the first release, download its DMG through a
+browser and confirm drag-to-Applications installation and launch on a Mac.
+
+### Real-device validation
 
 For an explicitly selected real device:
 

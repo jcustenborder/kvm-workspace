@@ -1,0 +1,143 @@
+name: Release macOS DMG
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Require a stable version tag on main
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node --input-type=module <<'NODE'
+            import fs from "node:fs";
+            const version=JSON.parse(fs.readFileSync("package.json","utf8")).version;
+            if(!/^\d+\.\d+\.\d+$/.test(version) || process.env.RELEASE_TAG!==`v${version}`) {
+              throw new Error("Release tag must equal v<package.json version>, without a prerelease suffix");
+            }
+          NODE
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq '.[].tag_name' > "$RUNNER_TEMP/release-tags"
+          if /usr/bin/grep -Fxq "$RELEASE_TAG" "$RUNNER_TEMP/release-tags"; then
+            echo "Release already exists: $RELEASE_TAG" >&2
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm test
+      - name: Build and verify application before signing
+        run: |
+          npm run package
+          npm run test:inventory
+          npm run test:windows -- --ci
+      - name: Import Developer ID into a temporary keychain
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          : "${MACOS_CERTIFICATE_P12_BASE64:?Missing certificate secret}"
+          : "${APPLE_TEAM_ID:?Missing Apple Team ID}"
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -k "$KEYCHAIN" -t cert -f pkcs12 -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db"
+          security find-identity -v -p codesigning "$KEYCHAIN" > "$RUNNER_TEMP/signing-identities"
+          node --input-type=module <<'NODE'
+            import fs from "node:fs";
+            const text=fs.readFileSync(`${process.env.RUNNER_TEMP}/signing-identities`,"utf8");
+            const identities=[...text.matchAll(/"(Developer ID Application: [^"]+)"/g)].map(match=>match[1]);
+            if(identities.length!==1 || !identities[0].endsWith(`(${process.env.APPLE_TEAM_ID})`)) {
+              throw new Error("Expected one valid Developer ID Application identity matching APPLE_TEAM_ID");
+            }
+            fs.appendFileSync(process.env.GITHUB_ENV,`MACOS_SIGNING_IDENTITY=${identities[0]}\nMACOS_SIGNING_KEYCHAIN=${process.env.RUNNER_TEMP}/release.keychain-db\n`);
+          NODE
+      - name: Sign, notarize and verify application
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: npm run package -- --release
+      - name: Verify notarized application inventory UI
+        run: npm run test:inventory
+      - name: Create, sign and notarize DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          STAGING="$RUNNER_TEMP/dmg-root"
+          mkdir "$STAGING"
+          ditto "build/KVM Workspace-darwin-arm64/KVM Workspace.app" "$STAGING/KVM Workspace.app"
+          ln -s /Applications "$STAGING/Applications"
+          DMG="build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg"
+          hdiutil create -volname "KVM Workspace" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+          codesign --sign "$MACOS_SIGNING_IDENTITY" --keychain "$MACOS_SIGNING_KEYCHAIN" --timestamp "$DMG"
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait --timeout 20m --output-format json > "$RUNNER_TEMP/notarization.json"
+          if ! node --input-type=module <<'NODE'
+            import fs from "node:fs";
+            const result=JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/notarization.json`,"utf8"));
+            if(result.status!=="Accepted") throw new Error(`Notarization status: ${result.status}; submission: ${result.id}`);
+          NODE
+          then
+            SUBMISSION_ID="$(node -p 'JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP+"/notarization.json","utf8")).id')"
+            xcrun notarytool log "$SUBMISSION_ID" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD"
+            exit 1
+          fi
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          codesign --verify --strict --verbose=2 "$DMG"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+          hdiutil verify "$DMG"
+          MOUNT="$RUNNER_TEMP/dmg-mounted"
+          hdiutil attach "$DMG" -readonly -nobrowse -mountpoint "$MOUNT"
+          trap 'hdiutil detach "$MOUNT"' EXIT
+          test "$(readlink "$MOUNT/Applications")" = /Applications
+          codesign --verify --deep --strict "$MOUNT/KVM Workspace.app"
+          xcrun stapler validate "$MOUNT/KVM Workspace.app"
+          spctl --assess --type execute --verbose=2 "$MOUNT/KVM Workspace.app"
+          (cd build && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256")
+      - name: Publish verified DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg" \
+            "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg.sha256" \
+            --verify-tag --title "KVM Workspace $RELEASE_TAG" --generate-notes
+      - name: Remove signing credentials
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/release.keychain-db"; then
+            security delete-keychain "$RUNNER_TEMP/release.keychain-db"
+          fi
+          rm -f "$RUNNER_TEMP/certificate.p12"
