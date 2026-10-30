@@ -24,6 +24,8 @@ function nativeWindowMenu(pid,selection) {
 }
 
 async function run() {
+  // Hosted runners cannot approve Accessibility or Keychain authorization dialogs.
+  const ci=process.argv.includes('--ci');
   const temporaryRoot=path.resolve('investigation/private/tmp');
   await mkdir(temporaryRoot,{recursive:true,mode:0o700});
   const temporary = await mkdtemp(path.join(temporaryRoot,'kvm-window-test-'));
@@ -65,29 +67,31 @@ async function run() {
     }
     assert.equal((await inventory.evaluate(()=>window.workspace.list())).sessions.length,3);
     report.checks.push('three simultaneous independent native session windows');
-    const titles=await Promise.all(windows.map(async page=>(await electron.browserWindow(page)).evaluate(win=>win.getTitle())));
-    const menu=nativeWindowMenu(electron.process().pid);
-    for(const title of titles) assert(menu.includes(title),`Native Window menu must list ${title}; received ${JSON.stringify(menu)}`);
-    await (await electron.browserWindow(windows[0])).evaluate(win=>win.minimize());
-    nativeWindowMenu(electron.process().pid,titles[0]);
-    await (await electron.browserWindow(windows[0])).evaluate(async win=>{
-      const deadline=Date.now()+5000;
-      while(Date.now()<deadline) {
-        if(!win.isMinimized() && win.isFocused()) return;
-        await new Promise(resolve=>setTimeout(resolve,50));
-      }
-      throw new Error('Selecting a Window menu entry must restore and focus its native window');
-    });
-    await windows[2].close();
-    assert.equal(nativeWindowMenu(electron.process().pid).includes(titles[2]),false,'Closed sessions must leave the native Window menu');
-    const menuReopen=electron.waitForEvent('window');
-    await inventory.evaluate(()=>window.workspace.open('2','lan'));
-    windows[2]=await menuReopen;
-    await windows[2].waitForURL(endpoint+'/');
-    await windows[2].locator('#stream-box').waitFor();
-    assert(nativeWindowMenu(electron.process().pid).includes(titles[2]),'Reopened sessions must return to the native Window menu');
-    report.checks.push('native Window menu lists sessions, restores/focuses selections, and tracks close/reopen');
-    if(process.argv.includes('--menu-only')) {console.log(JSON.stringify(report,null,2));return;}
+    if(!ci) {
+      const titles=await Promise.all(windows.map(async page=>(await electron.browserWindow(page)).evaluate(win=>win.getTitle())));
+      const menu=nativeWindowMenu(electron.process().pid);
+      for(const title of titles) assert(menu.includes(title),`Native Window menu must list ${title}; received ${JSON.stringify(menu)}`);
+      await (await electron.browserWindow(windows[0])).evaluate(win=>win.minimize());
+      nativeWindowMenu(electron.process().pid,titles[0]);
+      await (await electron.browserWindow(windows[0])).evaluate(async win=>{
+        const deadline=Date.now()+5000;
+        while(Date.now()<deadline) {
+          if(!win.isMinimized() && win.isFocused()) return;
+          await new Promise(resolve=>setTimeout(resolve,50));
+        }
+        throw new Error('Selecting a Window menu entry must restore and focus its native window');
+      });
+      await windows[2].close();
+      assert.equal(nativeWindowMenu(electron.process().pid).includes(titles[2]),false,'Closed sessions must leave the native Window menu');
+      const menuReopen=electron.waitForEvent('window');
+      await inventory.evaluate(()=>window.workspace.open('2','lan'));
+      windows[2]=await menuReopen;
+      await windows[2].waitForURL(endpoint+'/');
+      await windows[2].locator('#stream-box').waitFor();
+      assert(nativeWindowMenu(electron.process().pid).includes(titles[2]),'Reopened sessions must return to the native Window menu');
+      report.checks.push('native Window menu lists sessions, restores/focuses selections, and tracks close/reopen');
+      if(process.argv.includes('--menu-only')) {console.log(JSON.stringify(report,null,2));return;}
+    }
     assert.equal(await windows[0].evaluate(()=>headCaptureInstalled),true);
     report.checks.push('capture wrapper installed before firmware document scripts');
     await windows[0].evaluate(async url=>{try{await fetch(url,{mode:'no-cors'});}catch{}},otherEndpoint);
@@ -104,19 +108,21 @@ async function run() {
     await inventory.evaluate(url=>window.workspace.save({id:'2',name:'Fixture 2',lan:url,tailnet:''}),endpoint);
     assert.equal(JSON.parse(await readFile(savedPath,'utf8')).devices.find(item=>item.id==='0').name,'Fixture 0');
     report.checks.push('failed atomic inventory writes do not publish or leak into later saves');
-    await windows[1].evaluate(()=>localStorage.setItem('gl-kvm-token-key','fixture-token-not-a-real-login'));
-    await (await electron.browserWindow(windows[1])).evaluate(win=>win.focus());
-    await electron.evaluate(({Menu})=>Menu.getApplicationMenu().items.find(item=>item.label==='Session').submenu.items.find(item=>item.label==='Save This Login Securely').click());
-    const encryptedPath=savedPath.replace(/devices\.json$/,'login-1.encrypted');
-    let encrypted;
-    console.log('Validating Keychain-backed login storage; macOS authorization may be required.');
-    for(let attempt=0;attempt<900;attempt++) {
-      try {encrypted=await readFile(encryptedPath);break;} catch(error) {if(error.code!=='ENOENT')throw error;}
-      await new Promise(resolve=>setTimeout(resolve,100));
+    if(!ci) {
+      await windows[1].evaluate(()=>localStorage.setItem('gl-kvm-token-key','fixture-token-not-a-real-login'));
+      await (await electron.browserWindow(windows[1])).evaluate(win=>win.focus());
+      await electron.evaluate(({Menu})=>Menu.getApplicationMenu().items.find(item=>item.label==='Session').submenu.items.find(item=>item.label==='Save This Login Securely').click());
+      const encryptedPath=savedPath.replace(/devices\.json$/,'login-1.encrypted');
+      let encrypted;
+      console.log('Validating Keychain-backed login storage; macOS authorization may be required.');
+      for(let attempt=0;attempt<900;attempt++) {
+        try {encrypted=await readFile(encryptedPath);break;} catch(error) {if(error.code!=='ENOENT')throw error;}
+        await new Promise(resolve=>setTimeout(resolve,100));
+      }
+      assert(encrypted?.length>0,'Keychain-backed token file must be written');
+      assert.equal(encrypted.includes(Buffer.from('fixture-token-not-a-real-login')),false);
+      report.checks.push('saved login uses real macOS Keychain-backed encryption, not plaintext');
     }
-    assert(encrypted?.length>0,'Keychain-backed token file must be written');
-    assert.equal(encrypted.includes(Buffer.from('fixture-token-not-a-real-login')),false);
-    report.checks.push('saved login uses real macOS Keychain-backed encryption, not plaintext');
     for(let index=0;index<3;index++) await windows[index].evaluate(id=>localStorage.setItem('partition-test',id),String(index));
     for(let index=0;index<3;index++) assert.equal(await windows[index].evaluate(()=>localStorage.getItem('partition-test')),String(index));
     assert.equal(await windows[0].evaluate(()=>typeof window.workspace),'undefined');
@@ -143,10 +149,10 @@ async function run() {
     const reopened=electron.waitForEvent('window');
     await inventory.evaluate(()=>window.workspace.open('1','lan'));
     const fresh=await reopened;await fresh.waitForURL(endpoint+'/');
-    await fresh.waitForFunction(()=>localStorage.getItem('gl-kvm-token-key')==='fixture-token-not-a-real-login',null,{timeout:90000});
+    if(!ci) await fresh.waitForFunction(()=>localStorage.getItem('gl-kvm-token-key')==='fixture-token-not-a-real-login',null,{timeout:90000});
     await fresh.waitForLoadState('networkidle');
     assert.equal(await fresh.evaluate(()=>localStorage.getItem('partition-test')),null);
-    report.checks.push('encrypted saved login restores only to its device endpoint');
+    if(!ci) report.checks.push('encrypted saved login restores only to its device endpoint');
     assert.equal((await inventory.evaluate(()=>window.workspace.list())).sessions.length,3);
     report.checks.push('close cleans session storage; reopening leaves other windows intact');
     const auxiliary=electron.waitForEvent('window');
@@ -171,6 +177,7 @@ async function run() {
     assert(removal.error);
     assert(!(await inventory.evaluate(()=>window.workspace.list())).devices.some(item=>item.id==='0'));
     report.checks.push('failed credential deletion is retryable; concurrent removal blocks opening');
+    if(ci) report.skipped=['native Window menu (requires Accessibility approval)','Keychain login encryption/restoration (requires authorization)'];
     await mkdir('investigation/private',{recursive:true});
     await writeFile('investigation/private/window-validation.json',JSON.stringify(report,null,2));
     console.log(JSON.stringify(report,null,2));
