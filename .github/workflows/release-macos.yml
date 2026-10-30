@@ -121,8 +121,8 @@ jobs:
             xcrun notarytool log "$SUBMISSION_ID" "${AUTH[@]}" | tee build/application-notarization.log.json
             exit 1
           fi
-          xcrun stapler staple "$APP"
-          xcrun stapler validate "$APP"
+          bash scripts/stapler.sh staple "$APP"
+          bash scripts/stapler.sh validate "$APP"
           spctl --assess --type execute --verbose=2 "$APP"
       - name: Verify notarized application inventory UI
         run: npm run test:inventory
@@ -152,8 +152,8 @@ jobs:
             xcrun notarytool log "$SUBMISSION_ID" "${AUTH[@]}" | tee build/dmg-notarization.log.json
             exit 1
           fi
-          xcrun stapler staple "$DMG"
-          xcrun stapler validate "$DMG"
+          bash scripts/stapler.sh staple "$DMG"
+          bash scripts/stapler.sh validate "$DMG"
           codesign --verify --strict --verbose=2 "$DMG"
           spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
           hdiutil verify "$DMG"
@@ -162,7 +162,7 @@ jobs:
           trap 'hdiutil detach "$MOUNT"' EXIT
           test "$(readlink "$MOUNT/Applications")" = /Applications
           codesign --verify --deep --strict "$MOUNT/KVM Workspace.app"
-          xcrun stapler validate "$MOUNT/KVM Workspace.app"
+          bash scripts/stapler.sh validate "$MOUNT/KVM Workspace.app"
           spctl --assess --type execute --verbose=2 "$MOUNT/KVM Workspace.app"
           (cd build && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256")
       - name: Publish verified DMG
