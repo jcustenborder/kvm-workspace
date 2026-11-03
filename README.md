@@ -161,7 +161,8 @@ notarized DMG distribution. PR jobs never receive signing or Apple credentials.
 
 ### Publish a signed DMG
 
-The `Release macOS DMG` workflow runs automatically on pushes to `main`, including
+The `Verify and release macOS application` workflow verifies pull requests and runs
+verification followed by release automatically on pushes to `main`, including
 merged pull requests. Each successful run publishes a stable GitHub Release with
 the signed, notarized DMG, its checksum, an update ZIP, and `latest-mac.yml` attached. No manual tag is required;
 other branches do not publish releases.
