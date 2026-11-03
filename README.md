@@ -21,9 +21,18 @@ image, then open KVM Workspace from Applications. No Node.js installation is
 needed. Release DMGs and applications are Developer ID signed and notarized by
 Apple. Until the first release is published, use the source-build instructions below.
 
-To update, quit KVM Workspace and replace the application using the newer DMG.
-Your saved devices remain in Application Support. Automatic updates are not yet
-implemented. Releases currently target Apple Silicon; Intel Macs are not supported.
+Signed release builds check stable GitHub releases at startup and every six hours.
+Use **KVM Workspace → Check for Updates…** to check manually. The application asks
+before downloading, then asks again before **Install and Restart**, which closes
+active KVM sessions. Choosing **Later** does not install the update on quit; a
+downloaded update can be installed later from the application menu. After relaunch,
+check again to offer the cached download for installation. Background check failures
+appear as **Update Failed — Retry…** in the menu without interrupting sessions.
+
+For an older version without the updater, quit KVM Workspace and replace the
+application using the newer DMG once. Your saved devices and logins remain in
+Application Support. Source runs and local ad-hoc builds do not check for updates.
+Releases currently target Apple Silicon; Intel Macs are not supported.
 
 ## Run
 
@@ -150,7 +159,7 @@ notarized DMG distribution. PR jobs never receive signing or Apple credentials.
 
 The `Release macOS DMG` workflow runs automatically on pushes to `main`, including
 merged pull requests. Each successful run publishes a stable GitHub Release with
-the signed, notarized DMG and its checksum attached. No manual tag is required;
+the signed, notarized DMG, its checksum, an update ZIP, and `latest-mac.yml` attached. No manual tag is required;
 other branches do not publish releases.
 
 The first release starts at the stable version in `package.json`. Subsequent
@@ -185,8 +194,15 @@ staples it, mounts it, and validates the contained application before publishing
 Signing, notarization, or Gatekeeper failures stop publication. Release assets
 include the DMG and a `.sha256` checksum.
 
+The updater ZIP contains the same signed, notarized, stapled application. The
+workflow extracts it and verifies its signature, staple, and Gatekeeper assessment.
+`latest-mac.yml` records the embedded release version, ZIP filename, size, and
+SHA-512 digest used for download integrity checks. Release-only GitHub provider
+configuration is bundled before signing; native macOS update signature validation
+remains enabled. Full ZIP downloads are used, without differential-update files.
+
 The workflow creates a tag at the exact triggering commit and publishes the
-release only after the DMG and checksum have been uploaded. A rerun skips an
+release only after the DMG, checksum, update ZIP, and metadata have been uploaded. A rerun skips an
 already published release for that commit, or resumes an incomplete draft using
 the same version. After correcting credentials or a transient Apple service
 failure, use **Re-run failed jobs** in GitHub Actions.
@@ -194,6 +210,12 @@ failure, use **Re-run failed jobs** in GitHub Actions.
 Protect `main`: merged code runs with signing credentials. After the first release,
 download its DMG through a browser and confirm drag-to-Applications installation
 and launch on a Mac.
+
+Before considering in-place updates release-validated, test two signed versions:
+decline a download, approve a download, defer installation, quit and relaunch without
+updating, then explicitly install and restart. Confirm the new version launches and
+saved devices/logins remain available. Unit tests cover consent and the pinned
+updater's native staging handoff; they do not replace this signed macOS check.
 
 ### Real-device validation
 

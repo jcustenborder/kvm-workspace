@@ -1,5 +1,7 @@
 import {packager} from '@electron/packager';
 import {execFileSync} from 'node:child_process';
+import {writeFile} from 'node:fs/promises';
+import path from 'node:path';
 const release=process.argv.includes('--release');
 if(release) {
   for(const name of ['MACOS_SIGNING_IDENTITY','MACOS_SIGNING_KEYCHAIN']) {
@@ -13,6 +15,11 @@ const paths = await packager({
   overwrite:true,asar:true,prune:true,
   ignore:[/^\/\.rea(?:\/|$)/,/^\/investigation(?:\/|$)/,/^\/docs(?:\/|$)/,/^\/tests(?:\/|$)/,/^\/scripts(?:\/|$)/,/^\/\.playwright-mcp(?:\/|$)/,/^\/opencode\.json$/,/^\/\.git(?:hub)?(?:\/|$)/,/^\/build(?:\/|$)/],
   ...(release ? {
+    afterCopy:[async (/** @type {{buildPath:string}} */ {buildPath})=>{
+      await writeFile(path.join(buildPath,'..','app-update.yml'),JSON.stringify({
+        provider:'github',owner:'jcustenborder',repo:'kvm-workspace',updaterCacheDirName:'kvm-workspace-updater'
+      }));
+    }],
     osxSign:{identity:process.env.MACOS_SIGNING_IDENTITY,keychain:process.env.MACOS_SIGNING_KEYCHAIN}
   } : {}),
   extendInfo:{NSMicrophoneUsageDescription:'Forward your microphone only to KVM sessions you explicitly enable.',NSCameraUsageDescription:'Forward your camera only to KVM sessions you explicitly enable.',NSLocalNetworkUsageDescription:'Connect to the KVM devices saved in your device inventory.'}

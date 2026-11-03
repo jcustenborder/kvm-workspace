@@ -1,0 +1,32 @@
+'use strict';
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const {mkdtemp,writeFile,rm}=require('node:fs/promises');
+const {tmpdir}=require('node:os');
+const path=require('node:path');
+const {execFileSync}=require('node:child_process');
+const {createMetadata}=require('../scripts/update-metadata.cjs');
+
+test('update metadata describes actual archive bytes and is accepted by the updater parser',async(t)=>{
+  const directory=await mkdtemp(path.join(tmpdir(),'kvm-metadata-'));
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  const archive=path.join(directory,'KVM-Workspace-v0.2.0-macos-arm64.zip');
+  await writeFile(archive,'abc');
+  const metadata=await createMetadata('0.2.0',archive);
+  const digest='3a81oZNherrMQXNJriBBMRLm+k6JqX6iCp7u5ktV05ohkpkqJ0/BqDa6PCOj/uu9RU1EI2Q86A4qmslPpUyknw==';
+  assert.equal(metadata.version,'0.2.0');
+  assert.deepEqual(metadata.files,[{url:'KVM-Workspace-v0.2.0-macos-arm64.zip',sha512:digest,size:3}]);
+  assert.equal(metadata.path,metadata.files[0].url);
+  assert.equal(metadata.sha512,digest);
+  assert.ok(Number.isFinite(Date.parse(metadata.releaseDate)));
+  const {parseUpdateInfo}=require('electron-updater/out/providers/Provider');
+  const output=execFileSync(process.execPath,['scripts/update-metadata.cjs','0.2.0',archive],{encoding:'utf8'});
+  assert.deepEqual(parseUpdateInfo(output,'latest-mac.yml','https://github.com/releases/latest-mac.yml').files,metadata.files);
+  await assert.rejects(createMetadata('0.2.0-beta.1',archive),/stable version/);
+  await assert.rejects(createMetadata('01.2.0',archive),/stable version/);
+  await assert.rejects(createMetadata('0.3.0',archive),/archive name/);
+  await writeFile(archive,'');
+  await assert.rejects(createMetadata('0.2.0',archive),/empty/);
+  await rm(archive);
+  await assert.rejects(createMetadata('0.2.0',archive),/ENOENT/);
+});
