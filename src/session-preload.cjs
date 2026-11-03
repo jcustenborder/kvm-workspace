@@ -35,6 +35,80 @@ ipcRenderer.on('session:release-input',releaseInput);
 window.addEventListener('blur',releaseInput);
 window.addEventListener('pagehide',releaseInput);
 
+// Keep desired output separate from firmware defaults, Direct mode, and teardown.
+// No IPC bridge is exposed to the device's main world.
+window.addEventListener('DOMContentLoaded',async () => {
+  /** @type {boolean | null} */
+  let desired=null;
+  let loaded=false, applied=false, userChoice=false, stopped=false, wasDirect=false;
+  let deadline=0;
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timeout;
+  /** @param {string} message */
+  function warn(message) {
+    console.error('[workspace] sound output:',message);
+    const notice=document.createElement('div');
+    notice.setAttribute('role','alert');notice.textContent=message;
+    notice.style.cssText='position:fixed;bottom:48px;left:16px;z-index:2147483647;padding:10px;background:#432;color:#ffe3b3;font:13px system-ui';
+    document.body.append(notice);
+  }
+  /** @param {Element | null} control @returns {boolean | null} */
+  function outputState(control) {
+    const use=control?.querySelector('use');
+    const href=use?.getAttribute('href') || use?.getAttributeNS('http://www.w3.org/1999/xlink','href');
+    return href==='#gl-kvm-sound-full'?true:href==='#gl-kvm-sound-off'?false:null;
+  }
+  function restore() {
+    if (stopped || !loaded) return;
+    const stream=document.querySelector('#stream-window');
+    if (stream?.classList.contains('is-direct')) {wasDirect=true;applied=false;deadline=0;return;}
+    if (wasDirect) {wasDirect=false;applied=false;}
+    if (!stream?.classList.contains('stream-window-inited') || applied || desired===null) return;
+    const control=document.querySelector('.volume-icon');
+    const state=outputState(control);
+    if (state!==null && !control.matches('.not-allowed,[disabled],[aria-disabled="true"]')) {
+      applied=true;
+      if (state!==desired) {
+        control.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+        timeout=setTimeout(()=>{
+          if (!stopped && !document.querySelector('#stream-window.is-direct') && outputState(document.querySelector('.volume-icon'))!==desired) warn('Sound output could not be restored. Use the KVM speaker control to reconnect it.');
+        },1000);
+      }
+      return;
+    }
+    if (!deadline) deadline=Date.now()+30000;
+    if (Date.now()>=deadline) {
+      applied=true;
+      warn('Sound output could not be restored: the KVM speaker control is unavailable.');
+    }
+  }
+  /** @param {MouseEvent} event */
+  function remember(event) {
+    if (!event.isTrusted || !(event.target instanceof Element)) return;
+    const control=event.target.closest('.volume-icon,.settings .icon-button');
+    const before=outputState(control);
+    if (before===null || control.matches('.not-allowed,[disabled],[aria-disabled="true"]') || document.querySelector('#stream-window.is-direct')) return;
+    userChoice=true;applied=true;
+    clearTimeout(timeout);
+    timeout=setTimeout(()=>{
+      if (stopped) return;
+      const enabled=outputState(control);
+      if (enabled!==null && enabled!==before) {
+        desired=enabled;
+        void ipcRenderer.invoke('session:sound-output:set',enabled).catch(error=>warn(`Unable to remember sound output: ${error.message}`));
+      }
+    },0);
+  }
+  document.addEventListener('click',remember,true);
+  const timer=setInterval(restore,250);
+  window.addEventListener('pagehide',()=>{stopped=true;clearInterval(timer);clearTimeout(timeout);document.removeEventListener('click',remember,true);},{once:true});
+  try {
+    const saved=await ipcRenderer.invoke('session:sound-output:get');
+    if (!userChoice) desired=saved;
+    loaded=true;restore();
+  } catch(error) {if (!stopped) warn(`Unable to load sound output preference: ${error.message}`);}
+});
+
 // A frame counter is a liveness signal; document load alone is not one.
 window.addEventListener('DOMContentLoaded',() => {
   const badge = document.createElement('div');

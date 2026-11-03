@@ -73,6 +73,10 @@ in this application's bundle.
 - Use **Session → Audio** inside the device UI for speaker, USB microphone,
   mute and press-to-speak controls. **Direct** video mode has no audio; use an
   appropriate WebRTC mode for calls.
+- Speaker on/off is remembered separately for each KVM and restored when its
+  WebRTC session is ready, including after reconnecting or restarting the app.
+  Turning it off keeps it off next time. Microphone/camera capture stays manual;
+  the selected local output hardware is not retained across window closure.
 - macOS and the application require explicit microphone/camera permission.
   On microphone capture, choose the local input for that KVM. A provisional
   stream used to obtain device labels is stopped before the selected stream is
