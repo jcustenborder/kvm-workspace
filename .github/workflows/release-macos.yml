@@ -1,6 +1,7 @@
-name: Release macOS DMG
+name: Verify and release macOS application
 
 on:
+  pull_request:
   push:
     branches: [main]
 
@@ -12,11 +13,46 @@ defaults:
     shell: bash
 
 concurrency:
-  group: release-main
-  cancel-in-progress: false
+  group: macos-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run package
+      - name: Exercise packaged inventory UI and restart persistence
+        run: npm run test:inventory
+      - name: Exercise synthetic TLS sessions and window isolation
+        run: npm run test:windows -- --ci
+      - name: Archive application for manual inspection
+        run: ditto -c -k --sequesterRsrc --keepParent "build/KVM Workspace-darwin-arm64/KVM Workspace.app" build/KVM-Workspace-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KVM-Workspace-macos-arm64-${{ github.sha }}
+          path: build/KVM-Workspace-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-results-${{ github.sha }}
+          path: investigation/private/window-validation.json
+          if-no-files-found: ignore
+          retention-days: 7
   prepare:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -58,12 +94,6 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
-      - run: npm test
-      - name: Build and verify application before signing
-        run: |
-          npm run package
-          npm run test:inventory
-          npm run test:windows -- --ci
       - name: Import Developer ID into a temporary keychain
         env:
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
