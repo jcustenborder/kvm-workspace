@@ -6,6 +6,7 @@ const {pathToFileURL} = require('node:url');
 const {randomUUID,X509Certificate} = require('node:crypto');
 const {validateInventory,updateDevices,sameOrigin,certificateMatches} = require('./model.cjs');
 const {serial} = require('./serial.cjs');
+const {createUpdates,updatesEnabled} = require('./updates.cjs');
 
 app.setName('KVM Workspace');
 const ownsInstance=app.requestSingleInstanceLock();
@@ -274,8 +275,11 @@ app.whenReady().then(async () => {
   try {
     data = validateInventory(JSON.parse(await readFile(dataPath(),'utf8')));
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const canUpdate=updatesEnabled(app,process.platform,process.arch,process.resourcesPath);
+  let updates;
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    {label:app.name,submenu:[{role:'about'},{type:'separator'},{role:'services'},{type:'separator'},{role:'hide'},{role:'hideOthers'},{role:'unhide'},{type:'separator'},{role:'quit'}]},
+    {label:app.name,submenu:[{role:'about'},{id:'updates',label:'Check for Updates…',enabled:canUpdate,click:()=>{void updates?.check(true);}},
+      {type:'separator'},{role:'services'},{type:'separator'},{role:'hide'},{role:'hideOthers'},{role:'unhide'},{type:'separator'},{role:'quit'}]},
     {label:'File',submenu:[{label:'Device Inventory',accelerator:'CommandOrControl+Shift+D',click:showInventory},{role:'close'}]},
     {label:'Edit',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},
     {label:'Session',submenu:[{label:'Reconnect This Window',click:() => { const win=BrowserWindow.getFocusedWindow(); if (win && win !== inventory) win.reload(); }},
@@ -289,5 +293,13 @@ app.whenReady().then(async () => {
   ]));
   showInventory();
   app.on('activate',showInventory);
+  if(canUpdate) {
+    const {autoUpdater}=require('electron-updater');
+    updates=createUpdates({updater:autoUpdater,dialog,menuItem:Menu.getApplicationMenu().getMenuItemById('updates'),logger:console});
+    void updates.check(false);
+    const timer=setInterval(()=>{void updates.check(false);},6*60*60*1000);
+    timer.unref();
+    app.once('will-quit',()=>clearInterval(timer));
+  }
 }).catch((error) => { report(error); app.quit(); });
 app.on('window-all-closed',() => { /* macOS keeps the application and inventory menu available. */ });

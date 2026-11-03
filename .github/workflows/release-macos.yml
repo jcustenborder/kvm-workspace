@@ -126,6 +126,17 @@ jobs:
           spctl --assess --type execute --verbose=2 "$APP"
       - name: Verify notarized application inventory UI
         run: npm run test:inventory
+      - name: Create and verify auto-update archive
+        run: |
+          APP="build/KVM Workspace-darwin-arm64/KVM Workspace.app"
+          ZIP="build/KVM-Workspace-$RELEASE_TAG-macos-arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+          node scripts/update-metadata.cjs "$RELEASE_VERSION" "$ZIP" > build/latest-mac.yml
+          EXTRACTED="$RUNNER_TEMP/update-extracted"
+          ditto -x -k "$ZIP" "$EXTRACTED"
+          codesign --verify --deep --strict "$EXTRACTED/KVM Workspace.app"
+          bash scripts/stapler.sh validate "$EXTRACTED/KVM Workspace.app"
+          spctl --assess --type execute --verbose=2 "$EXTRACTED/KVM Workspace.app"
       - name: Create, sign and notarize DMG
         timeout-minutes: 25
         env:
@@ -165,7 +176,7 @@ jobs:
           bash scripts/stapler.sh validate "$MOUNT/KVM Workspace.app"
           spctl --assess --type execute --verbose=2 "$MOUNT/KVM Workspace.app"
           (cd build && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256")
-      - name: Publish verified DMG
+      - name: Publish verified DMG and auto-update assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -192,11 +203,15 @@ jobs:
           if test "$STATE" = draft; then
             gh release upload "$RELEASE_TAG" \
               "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg" \
-              "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg.sha256" --clobber
+              "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg.sha256" \
+              "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.zip" \
+              build/latest-mac.yml --clobber
           else
             gh release create "$RELEASE_TAG" \
               "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg" \
               "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.dmg.sha256" \
+              "build/KVM-Workspace-$RELEASE_TAG-macos-arm64.zip" \
+              build/latest-mac.yml \
               --target "$GITHUB_SHA" --draft --title "KVM Workspace $RELEASE_TAG" --generate-notes
           fi
           gh release edit "$RELEASE_TAG" --draft=false --latest
