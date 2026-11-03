@@ -52,3 +52,13 @@ test('corrupt persisted trust and duplicate device identities fail instead of be
   assert.throws(()=>validateInventory({devices:[{id:'a',name:'A',lan:'host'},{id:'a',name:'B',lan:'other'}],pins:{}}),/Duplicate/);
   assert.deepEqual(validateInventory({devices:[{id:'a',name:'A',lan:'host'}],pins:{}}),{devices:[{id:'a',name:'A',lan:'https://host',tailnet:''}],pins:{}});
 });
+
+test('sound output choices survive inventory round trips and edits, with strict per-device boolean values', () => {
+  const devices=[{id:'a',name:'A',lan:'https://a',tailnet:''},{id:'b',name:'B',lan:'https://b',tailnet:''}];
+  const saved={devices,pins:{},soundOutputs:{a:true,b:false}};
+  assert.deepEqual(validateInventory(JSON.parse(JSON.stringify(saved))),saved);
+  assert.deepEqual(validateInventory({...saved,devices:updateDevices(devices,{...devices[0],name:'Renamed'})}).soundOutputs,{a:true,b:false});
+  for(const soundOutputs of [null,[],true,{a:'true'},{a:1},{a:null},{missing:true}]) {
+    assert.throws(()=>validateInventory({...saved,soundOutputs}),/sound output/i);
+  }
+});

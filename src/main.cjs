@@ -17,9 +17,9 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding');
 const inventoryURL = pathToFileURL(path.join(__dirname,'index.html')).href;
 /** @type {Electron.BrowserWindow | null} */
 let inventory = null;
-/** @type {{devices:Array<{id:string,name:string,lan:string,tailnet:string}>,pins:Record<string,string>}} */
+/** @type {{devices:Array<{id:string,name:string,lan:string,tailnet:string}>,pins:Record<string,string>,soundOutputs?:Record<string,boolean>}} */
 let data = {devices:[],pins:{}};
-/** @type {Map<string,{id:string,deviceId:string,name:string,endpoint:string,window:Electron.BrowserWindow,session:Electron.Session}>} */
+/** @type {Map<string,{id:string,deviceId:string,name:string,endpoint:string,window:Electron.BrowserWindow,session:Electron.Session,generation:number}>} */
 const sessions = new Map();
 /** @type {Map<string,Promise<void>>} */
 const cleanupTasks = new Map();
@@ -63,6 +63,15 @@ function requireInventory(event) {
   if (!inventory || event.sender !== inventory.webContents || event.senderFrame !== inventory.webContents.mainFrame || event.senderFrame.url !== inventoryURL) {
     throw new Error('This operation is available only from the device inventory.');
   }
+}
+
+/** @param {Electron.IpcMainInvokeEvent} event */
+function requireSession(event) {
+  const item=[...sessions.values()].find(item=>item.window.webContents===event.sender);
+  if (!item || event.senderFrame!==event.sender.mainFrame || !sameOrigin(event.senderFrame.url,item.endpoint)) {
+    throw new Error('Sound output preferences are available only from the owning KVM session.');
+  }
+  return item;
 }
 
 /** @param {string} endpoint @param {string} pem @returns {Promise<void>} */
@@ -114,7 +123,7 @@ async function openSession(device,endpoint) {
     webPreferences:{session:isolated,contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false,
       autoplayPolicy:'no-user-gesture-required',preload:path.join(__dirname,'session-preload.cjs'),
       additionalArguments:[`--workspace-media=${Buffer.from(mediaControl).toString('base64')}`]}});
-  const item = {id,deviceId:device.id,name:device.name,endpoint,window:win,session:isolated};
+  const item = {id,deviceId:device.id,name:device.name,endpoint,window:win,session:isolated,generation:0};
   /** @type {Set<Electron.BrowserWindow>} */
   const auxiliary = new Set();
   sessions.set(id,item);
@@ -123,7 +132,7 @@ async function openSession(device,endpoint) {
   const grants = new Set();
   let documentGeneration=0;
   win.webContents.on('did-start-navigation',(_event,_url,isInPlace,isMainFrame) => {
-    if (isMainFrame && !isInPlace) {documentGeneration++;grants.clear();}
+    if (isMainFrame && !isInPlace) {documentGeneration++;item.generation++;grants.clear();}
   });
   const harmless = new Set(['fullscreen','pointerLock','keyboardLock','clipboard-sanitized-write','local-network','local-network-access']);
   isolated.setPermissionCheckHandler((contents,permission,origin,details) => {
@@ -206,7 +215,7 @@ async function openSession(device,endpoint) {
   } catch (error) { if (error.code !== 'ENOENT') report(new Error(`Saved login failed while ${restoreStage} (${error.name}). Use Session → Forget Saved Login, then sign in again.`,{cause:error})); }
 }
 
-/** @returns {{id:string,deviceId:string,name:string,endpoint:string,window:Electron.BrowserWindow,session:Electron.Session} | undefined} */
+/** @returns {{id:string,deviceId:string,name:string,endpoint:string,window:Electron.BrowserWindow,session:Electron.Session,generation:number} | undefined} */
 function focusedSession() {
   const win = BrowserWindow.getFocusedWindow();
   return [...sessions.values()].find((item) => item.window === win);
@@ -237,6 +246,20 @@ async function forgetLogin() {
   if (!item.window.isDestroyed()) await dialog.showMessageBox(item.window,{message:'Saved login removed.',detail:'Your current session remains connected.'});
 }
 
+ipcMain.handle('session:sound-output:get',(event) => {
+  const item=requireSession(event);
+  return data.soundOutputs && Object.hasOwn(data.soundOutputs,item.deviceId) ? data.soundOutputs[item.deviceId] : null;
+});
+ipcMain.handle('session:sound-output:set',async (event,enabled) => {
+  const item=requireSession(event), generation=item.generation;
+  if (typeof enabled!=='boolean') throw new Error('Sound output preference must be a boolean.');
+  await updateData(current=>{
+    requireSession(event);
+    if (generation!==item.generation || !current.devices.some(device=>device.id===item.deviceId)) throw new Error('This sound output session is no longer current.');
+    return {...current,soundOutputs:{...current.soundOutputs,[item.deviceId]:enabled}};
+  }).catch(error=>{report(error);throw error;});
+});
+
 ipcMain.handle('inventory:list',(event) => {
   requireInventory(event);
   return {devices:data.devices,sessions:[...sessions.values()].map(({id,deviceId,name,endpoint}) => ({id,deviceId,name,endpoint}))};
@@ -252,7 +275,11 @@ ipcMain.handle('inventory:remove',async (event,id) => {
     await serial(`credentials:${id}`,async()=>{
       try { await unlink(path.join(app.getPath('userData'),`login-${id}.encrypted`)); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
-      await updateData(current=>({...current,devices:current.devices.filter(item=>item.id!==id)}));
+      await updateData(current=>{
+        const next={...current,devices:current.devices.filter(item=>item.id!==id)};
+        if (current.soundOutputs) next.soundOutputs=Object.fromEntries(Object.entries(current.soundOutputs).filter(([deviceId])=>deviceId!==id));
+        return next;
+      });
     });
   } finally { pendingRemovals.delete(id); }
 });

@@ -33,10 +33,19 @@ async function run() {
   execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',keyPath,'-out',certPath,'-days','1','-subj','/CN=localhost'],{stdio:'ignore'});
   const certificate=await readFile(certPath), key=await readFile(keyPath);
   const pin=new X509Certificate(certificate).fingerprint256;
-  const html=`<!doctype html><title>Synthetic session fixture</title><div id="stream-box" tabindex="0" style="width:500px;height:300px">Synthetic input surface</div><script>
+  const html=`<!doctype html><title>Synthetic session fixture</title>
+    <span class="volume-icon"><svg width="22" height="22" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#gl-kvm-sound-off"/></svg></span>
+    <div class="settings"><button class="icon-button" aria-label="Speaker"><svg width="22" height="22" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#gl-kvm-sound-off"/></svg></button></div>
+    <div id="stream-window"><div id="stream-box" tabindex="0" style="width:500px;height:300px">Synthetic input surface</div></div><script>
     window.headCaptureInstalled=!!window.__workspaceCapture;
     window.events=[]; for(const type of ['keydown','keyup','mousedown','mouseup','blur']) window.addEventListener(type,event=>events.push({type:event.type,key:event.code,button:event.button}),true);
     window.loadId=crypto.randomUUID(); document.querySelector('#stream-box').focus();
+    window.output=false; window.outputClicks=0; window.captureAttempts=0;
+    navigator.mediaDevices.getUserMedia=async()=>{captureAttempts++;throw new Error('Sound restoration must not capture');};
+    // Vue commits the speaker icon after the synchronous state toggle.
+    window.setOutput=enabled=>{output=enabled;queueMicrotask(()=>{for(const use of document.querySelectorAll('use')) use.setAttributeNS('http://www.w3.org/1999/xlink','xlink:href',output?'#gl-kvm-sound-full':'#gl-kvm-sound-off');});};
+    for(const control of document.querySelectorAll('.volume-icon,.icon-button')) control.addEventListener('click',()=>{outputClicks++;setOutput(!output);});
+    window.setReady=()=>document.querySelector('#stream-window').classList.add('stream-window-inited');
   </script>`;
   const server=createServer({key,cert:certificate},(_request,response)=>{response.writeHead(200,{'content-type':'text/html'});response.end(html);});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -46,7 +55,9 @@ async function run() {
   await new Promise(resolve=>otherServer.listen(0,'127.0.0.1',resolve));
   const otherEndpoint=`https://127.0.0.1:${otherServer.address().port}`;
   const report={scenario:'Synthetic page, three isolated windows; not three live KVMs',checks:[],at:new Date().toISOString()};
-  const electron=await _electron.launch({executablePath:path.resolve('build/KVM Workspace-darwin-arm64/KVM Workspace.app/Contents/MacOS/KVM Workspace'),args:[`--user-data-dir=${path.join(temporary,'profile')}`]});
+  const source=process.argv.includes('--source');
+  const launchOptions={executablePath:source?require('electron'):path.resolve('build/KVM Workspace-darwin-arm64/KVM Workspace.app/Contents/MacOS/KVM Workspace'),args:[...(source?[path.resolve('.')]:[]),`--user-data-dir=${path.join(temporary,'profile')}`]};
+  let electron=await _electron.launch(launchOptions);
   let diagnostics='';electron.process().stderr.on('data',chunk=>{diagnostics+=chunk.toString();});
   electron.on('window',page=>page.on('console',message=>{diagnostics+=`\n${message.type()}: ${message.text()}`;}));
   try {
@@ -67,6 +78,97 @@ async function run() {
     }
     assert.equal((await inventory.evaluate(()=>window.workspace.list())).sessions.length,3);
     report.checks.push('three simultaneous independent native session windows');
+    await windows[0].evaluate(()=>setReady());
+    await windows[0].locator('.volume-icon').click();
+    const savedPath=await electron.evaluate(({app})=>app.getPath('userData')+'/devices.json');
+    // A missing preference save is observable on disk, not just in a test double.
+    await windows[0].waitForFunction(()=>{
+      const icon=document.querySelector('.volume-icon use');
+      return icon.getAttributeNS('http://www.w3.org/1999/xlink','href')==='#gl-kvm-sound-full';
+    });
+    let savedOn=false;
+    for(let attempt=0;attempt<50;attempt++) {
+      if(JSON.parse(await readFile(savedPath,'utf8')).soundOutputs?.['0']===true) {savedOn=true;break;}
+      await new Promise(resolve=>setTimeout(resolve,20));
+    }
+    assert(savedOn,'Explicit output enable must persist to the owning KVM');
+    const rejected=await electron.evaluate(async ({ipcMain,BrowserWindow})=>{
+      const session=BrowserWindow.getAllWindows().find(win=>win.getTitle().startsWith('Fixture 0')).webContents;
+      const inventory=BrowserWindow.getAllWindows().find(win=>win.webContents.getURL().startsWith('file:')).webContents;
+      const read=ipcMain._invokeHandlers.get('session:sound-output:get');
+      const write=ipcMain._invokeHandlers.get('session:sound-output:set');
+      const results=[];
+      for(const [handler,event,value] of [
+        [read,{sender:inventory,senderFrame:inventory.mainFrame}],
+        [write,{sender:session,senderFrame:session.mainFrame},'true'],
+        [read,{sender:session,senderFrame:inventory.mainFrame}],
+        [read,{sender:session,senderFrame:{url:'https://wrong-origin.test'}}]
+      ]) {
+        try {await handler(event,value);results.push(false);} catch {results.push(true);}
+      }
+      return results;
+    });
+    assert.deepEqual(rejected,[true,true,true,true]);
+    await windows[0].evaluate(()=>{const frame=document.createElement('iframe');frame.src='/frame';document.body.append(frame);});
+    await windows[0].frameLocator('iframe').locator('#stream-box').waitFor();
+    assert.equal(await electron.evaluate(async ({ipcMain,BrowserWindow})=>{
+      const sender=BrowserWindow.getAllWindows().find(win=>win.getTitle().startsWith('Fixture 0')).webContents;
+      try {await ipcMain._invokeHandlers.get('session:sound-output:get')({sender,senderFrame:sender.mainFrame.frames[0]});return false;} catch {return true;}
+    }),true,'Same-origin subframes must not read session preferences');
+    const specialWindow=electron.waitForEvent('window');
+    await inventory.evaluate(async url=>{await window.workspace.save({id:'toString',name:'Special identity',lan:url,tailnet:''});await window.workspace.open('toString','lan');},endpoint);
+    const special=await specialWindow;await special.waitForURL(endpoint+'/');
+    assert.equal(await electron.evaluate(({ipcMain,BrowserWindow})=>{
+      const sender=BrowserWindow.getAllWindows().find(win=>win.getTitle().startsWith('Special identity')).webContents;
+      return ipcMain._invokeHandlers.get('session:sound-output:get')({sender,senderFrame:sender.mainFrame});
+    }),null,'A device without a saved choice must not inherit object prototype values');
+    await special.close();await inventory.evaluate(()=>window.workspace.remove('toString'));
+    await windows[0].reload();
+    assert.equal(await windows[0].evaluate(()=>output),false,'Startup default must remain off before readiness');
+    await windows[0].evaluate(()=>setReady());
+    await windows[0].waitForFunction(()=>output);
+    assert.equal(await windows[0].evaluate(()=>outputClicks),1);
+    assert.equal(await windows[1].evaluate(()=>output),false,'Other devices must remain off');
+    await windows[0].evaluate(()=>{document.querySelector('#stream-window').classList.add('is-direct');setOutput(false);});
+    await windows[0].waitForTimeout(350);
+    assert.equal(JSON.parse(await readFile(savedPath,'utf8')).soundOutputs['0'],true);
+    await windows[0].evaluate(()=>document.querySelector('#stream-window').classList.remove('is-direct'));
+    await windows[0].waitForFunction(()=>output);
+    await windows[0].locator('[aria-label="Speaker"]').click();
+    await windows[0].waitForTimeout(350);
+    assert.equal(JSON.parse(await readFile(savedPath,'utf8')).soundOutputs['0'],false,'Settings speaker off must persist');
+    await windows[0].reload();await windows[0].evaluate(()=>setReady());
+    await windows[0].waitForTimeout(350);
+    assert.equal(await windows[0].evaluate(()=>outputClicks),0,'Remembered off must not toggle');
+    await windows[0].locator('.volume-icon').click();
+    await windows[0].waitForTimeout(350);
+    await windows[0].close();
+    const soundReopen=electron.waitForEvent('window');
+    await inventory.evaluate(()=>window.workspace.open('0','lan'));
+    windows[0]=await soundReopen;await windows[0].waitForURL(endpoint+'/');
+    await windows[0].evaluate(()=>setReady());await windows[0].waitForFunction(()=>output);
+    assert.equal(await windows[0].evaluate(()=>captureAttempts),0);
+    assert.equal(await windows[0].evaluate(()=>typeof window.workspace),'undefined');
+    await windows[0].reload();
+    await windows[0].evaluate(()=>{document.querySelector('.volume-icon').classList.add('not-allowed');setReady();});
+    await windows[0].waitForTimeout(350);
+    assert.equal(await windows[0].evaluate(()=>outputClicks),0,'Disabled speaker controls must not be toggled');
+    await windows[0].evaluate(()=>document.querySelector('.volume-icon').classList.remove('not-allowed'));
+    await windows[0].waitForFunction(()=>output);
+    await windows[0].reload();
+    await windows[0].evaluate(()=>{
+      document.querySelector('.volume-icon use').setAttributeNS('http://www.w3.org/1999/xlink','xlink:href','#unknown-speaker-icon');
+      setReady();
+    });
+    await windows[0].getByRole('alert').filter({hasText:'speaker control is unavailable'}).waitFor({timeout:35000});
+    assert.equal(await windows[0].evaluate(()=>outputClicks),0,'Unknown firmware controls must not be toggled');
+    assert.equal(JSON.parse(await readFile(savedPath,'utf8')).soundOutputs['0'],true,'Restoration failure must preserve intent');
+    await windows[0].evaluate(()=>setOutput(false));
+    await windows[0].waitForTimeout(350);
+    assert.equal(await windows[0].evaluate(()=>outputClicks),0,'Failed restoration must stop attempting');
+    await windows[0].locator('.volume-icon').click();
+    await windows[0].waitForTimeout(350);
+    report.checks.push('sound output persists per device, restores on reload/reopen, respects off and Direct mode, and never captures microphone/camera');
     if(!ci) {
       const titles=await Promise.all(windows.map(async page=>(await electron.browserWindow(page)).evaluate(win=>win.getTitle())));
       const menu=nativeWindowMenu(electron.process().pid);
@@ -100,7 +202,7 @@ async function run() {
     await inventory.evaluate(async ({lan,tailnet})=>window.workspace.save({id:'0',name:'Fixture 0',lan,tailnet}),{lan:endpoint,tailnet:otherEndpoint});
     await assert.rejects(inventory.evaluate(()=>window.workspace.open('0','tailnet')),/another route/);
     report.checks.push('different route cannot falsely report success for an existing LAN window');
-    const savedPath=await electron.evaluate(({app})=>app.getPath('userData')+'/devices.json');
+    assert.equal(JSON.parse(await readFile(savedPath,'utf8')).soundOutputs['0'],true,'Inventory edit must preserve sound preference');
     await rename(savedPath,savedPath+'.original');await mkdir(savedPath);
     await assert.rejects(inventory.evaluate(url=>window.workspace.save({id:'0',name:'Rejected edit',lan:url,tailnet:''}),endpoint));
     assert.equal((await inventory.evaluate(()=>window.workspace.list())).devices.find(item=>item.id==='0').name,'Fixture 0');
@@ -128,10 +230,14 @@ async function run() {
     assert.equal(await windows[0].evaluate(()=>typeof window.workspace),'undefined');
     assert.equal(await windows[0].evaluate(()=>typeof require),'undefined');
     report.checks.push('same-origin pages have independent storage and no privileged bridge');
+    // macOS does not activate a background app when only BrowserWindow.focus runs.
+    await electron.evaluate(({app})=>app.focus({steal:true}));
     await (await electron.browserWindow(windows[0])).evaluate(win=>win.focus());
+    await windows[0].waitForFunction(()=>document.hasFocus());
     await windows[0].locator('#stream-box').focus();
     await windows[0].keyboard.down('Shift');
     await (await electron.browserWindow(windows[1])).evaluate(win=>win.focus());
+    await windows[1].waitForFunction(()=>document.hasFocus());
     await windows[0].waitForFunction(()=>events.some(event=>event.type==='keyup'&&event.key==='ShiftLeft'));
     assert.equal(await windows[2].evaluate(()=>events.some(event=>event.type==='keydown'&&event.key==='ShiftLeft')),false);
     report.checks.push('held modifier released on focus change without broadcasting input');
@@ -176,7 +282,29 @@ async function run() {
     assert.equal(removal.allowed,undefined);
     assert(removal.error);
     assert(!(await inventory.evaluate(()=>window.workspace.list())).devices.some(item=>item.id==='0'));
+    assert.equal(Object.hasOwn(JSON.parse(await readFile(savedPath,'utf8')).soundOutputs,'0'),false);
     report.checks.push('failed credential deletion is retryable; concurrent removal blocks opening');
+    await fresh.evaluate(()=>setReady());await fresh.locator('.volume-icon').click();
+    await windows[2].evaluate(()=>setReady());
+    await windows[2].locator('.volume-icon').click();await windows[2].waitForTimeout(350);
+    await windows[2].locator('.volume-icon').click();
+    await fresh.waitForTimeout(350);
+    await electron.close();
+    electron=await _electron.launch(launchOptions);
+    await electron.evaluate(({dialog})=>{dialog.showErrorBox=(_title,message)=>{throw new Error(message);};});
+    const restartedInventory=await electron.firstWindow();await restartedInventory.waitForSelector('#add-device');
+    const restartedWindow=electron.waitForEvent('window');
+    await restartedInventory.evaluate(()=>window.workspace.open('1','lan'));
+    const restored=await restartedWindow;await restored.waitForURL(endpoint+'/');
+    await restored.evaluate(()=>setReady());await restored.waitForFunction(()=>output);
+    assert.equal(await restored.evaluate(()=>captureAttempts),0);
+    const restartedOffWindow=electron.waitForEvent('window');
+    await restartedInventory.evaluate(()=>window.workspace.open('2','lan'));
+    const restoredOff=await restartedOffWindow;await restoredOff.waitForURL(endpoint+'/');
+    await restoredOff.evaluate(()=>setReady());await restoredOff.waitForTimeout(350);
+    assert.equal(await restoredOff.evaluate(()=>outputClicks),0,'Explicit off must survive app restart');
+    assert.equal(JSON.parse(await readFile(savedPath,'utf8')).soundOutputs['2'],false);
+    report.checks.push('remembered sound output restores after full application restart');
     if(ci) report.skipped=['native Window menu (requires Accessibility approval)','Keychain login encryption/restoration (requires authorization)'];
     await mkdir('investigation/private',{recursive:true});
     await writeFile('investigation/private/window-validation.json',JSON.stringify(report,null,2));

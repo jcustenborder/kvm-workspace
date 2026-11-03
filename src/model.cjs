@@ -48,7 +48,7 @@ function updateDevices(devices, value) {
   return result;
 }
 
-/** @param {unknown} value @returns {{devices:Array<{id:string,name:string,lan:string,tailnet:string}>,pins:Record<string,string>}} */
+/** @param {unknown} value @returns {{devices:Array<{id:string,name:string,lan:string,tailnet:string}>,pins:Record<string,string>,soundOutputs?:Record<string,boolean>}} */
 function validateInventory(value) {
   if (!value || typeof value !== 'object' || !Array.isArray(value.devices)) throw new Error('Invalid saved device inventory.');
   if (!value.pins || typeof value.pins !== 'object' || Array.isArray(value.pins)) throw new Error('Invalid saved certificate trust.');
@@ -58,6 +58,13 @@ function validateInventory(value) {
     if (normalizeEndpoint(endpoint)!==endpoint || typeof fingerprint!=='string' || !/^[A-F0-9]{2}(:[A-F0-9]{2}){31}$/.test(fingerprint)) throw new Error('Invalid saved certificate fingerprint.');
     return [endpoint,fingerprint];
   }));
+  if ('soundOutputs' in value) {
+    const outputs=value.soundOutputs;
+    if (!outputs || typeof outputs!=='object' || Array.isArray(outputs) || Object.entries(outputs).some(([id,enabled])=>!devices.some(device=>device.id===id) || typeof enabled!=='boolean')) {
+      throw new Error('Invalid saved sound output preference.');
+    }
+    return {devices,pins,soundOutputs:Object.fromEntries(Object.entries(outputs))};
+  }
   return {devices,pins};
 }
 
