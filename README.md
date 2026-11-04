@@ -97,9 +97,36 @@ in this application's bundle.
 
 ### Saved logins
 
+For automatic authentication even after login tokens expire:
+
+1. Enter or paste the KVM administrator password into its login field. Until the
+   clipboard shortcut issue is resolved, use **Edit → Paste** if ⌘V does not work.
+2. Choose **Session → Save Password and Sign In**. This explicitly saves the
+   password in native macOS Keychain and submits the login form.
+3. On subsequent opens or session expiry, the application fills and submits the
+   recognized device login form automatically. A signing-in status replaces the
+   form while authentication is pending. An incorrect password, Keychain error,
+   or 15-second timeout reveals manual login without repeated attempts. If 2FA
+   is enabled, the password is filled but you enter the code and click **Log In**.
+
+Passwords belong to the saved device's stable internal ID, so its LAN and
+Tailscale addresses share one password and renaming the entry preserves it.
+Separate entries remain separate even when their names match. Each route still
+requires normal HTTPS certificate verification. Passwords are filled only in the
+device's administrator login form, never in remote-host or password-change fields.
+Firmware changes that alter the recognized form may require manual login.
+
+To replace a rejected password, enter the corrected value and choose **Save
+Password and Sign In** again. **Session → Forget Saved Password** removes the
+Keychain password without disconnecting the current session; removing the device
+also deletes its password. macOS may request Keychain authorization. Passwords
+are not written into inventory files, saved-token files, or browser storage.
+
+The older token-only option remains available:
+
 Use **Session → Save This Login Securely** to retain the current authentication
-tokens with macOS Keychain-backed encryption. The password is not saved. Session
-expiry or revocation can still require signing in again. **Forget Saved Login**
+tokens with macOS Keychain-backed encryption. This command does not save the
+password. Session expiry or revocation can still require signing in again. **Forget Saved Login**
 removes the retained login while leaving the current connection open.
 
 Named devices and certificate fingerprints live in the application's own
@@ -126,6 +153,7 @@ published DMGs use the signed release process described below.
 ```sh
 npm run test:inventory
 npm run test:windows
+npm run test:passwords
 ```
 
 For a focused native Window-menu check:
@@ -154,6 +182,11 @@ filesystem failure handling. The `--ci` mode explicitly skips native-menu
 Accessibility automation and interactive Keychain encryption/restoration;
 run `npm run test:windows` locally for those checks. No real-device, camera,
 microphone, or sustained-call validation is claimed by CI.
+
+The password check exercises firmware-shaped synthetic login pages and replaces
+only the native credential-store boundary in CI. Run
+`npm run test:passwords -- --keychain` locally for a real Keychain round trip with
+temporary test-only device IDs. Neither mode authenticates to a real KVM.
 
 Successful verification runs upload an ad-hoc-signed application ZIP for manual
 inspection, retained for seven days. These are development artifacts, not the
