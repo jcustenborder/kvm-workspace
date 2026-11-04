@@ -7,6 +7,7 @@ const {randomUUID,X509Certificate} = require('node:crypto');
 const {validateInventory,updateDevices,sameOrigin,certificateMatches} = require('./model.cjs');
 const {serial} = require('./serial.cjs');
 const {createUpdates,updatesEnabled} = require('./updates.cjs');
+const passwords = require('./passwords.cjs');
 
 app.setName('KVM Workspace');
 const ownsInstance=app.requestSingleInstanceLock();
@@ -20,7 +21,7 @@ const inventoryURL = pathToFileURL(path.join(__dirname,'index.html')).href;
 let inventory = null;
 /** @type {{devices:Array<{id:string,name:string,lan:string,tailnet:string}>,pins:Record<string,string>,soundOutputs?:Record<string,boolean>}} */
 let data = {devices:[],pins:{}};
-/** @type {Map<string,{id:string,deviceId:string,name:string,endpoint:string,window:Electron.BrowserWindow,session:Electron.Session,generation:number}>} */
+/** @type {Map<string,{id:string,deviceId:string,name:string,endpoint:string,window:Electron.BrowserWindow,session:Electron.Session,generation:number,loginReady:Promise<void>}>} */
 const sessions = new Map();
 /** @type {Map<string,Promise<void>>} */
 const cleanupTasks = new Map();
@@ -124,7 +125,8 @@ async function openSession(device,endpoint) {
     webPreferences:{session:isolated,contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false,
       autoplayPolicy:'no-user-gesture-required',preload:path.join(__dirname,'session-preload.cjs'),
       additionalArguments:[`--workspace-media=${Buffer.from(mediaControl).toString('base64')}`]}});
-  const item = {id,deviceId:device.id,name:device.name,endpoint,window:win,session:isolated,generation:0};
+  const loginRestore=Promise.withResolvers();
+  const item = {id,deviceId:device.id,name:device.name,endpoint,window:win,session:isolated,generation:0,loginReady:loginRestore.promise};
   /** @type {Set<Electron.BrowserWindow>} */
   const auxiliary = new Set();
   sessions.set(id,item);
@@ -214,6 +216,7 @@ async function openSession(device,endpoint) {
     await win.webContents.executeJavaScript(`for (const [key,value] of ${JSON.stringify(storage)}) localStorage.setItem(key,value)`);
     win.reload();
   } catch (error) { if (error.code !== 'ENOENT') report(new Error(`Saved login failed while ${restoreStage} (${error.name}). Use Session → Forget Saved Login, then sign in again.`,{cause:error})); }
+  finally { loginRestore.resolve(); }
 }
 
 /** @returns {{id:string,deviceId:string,name:string,endpoint:string,window:Electron.BrowserWindow,session:Electron.Session,generation:number} | undefined} */
@@ -234,7 +237,7 @@ async function saveLogin() {
     const bytes = await safeStorage.encryptStringAsync(JSON.stringify({endpoint:item.endpoint,storage}));
     await writeFile(path.join(app.getPath('userData'),`login-${item.deviceId}.encrypted`),bytes,{mode:0o600});
   });
-  if (!item.window.isDestroyed()) await dialog.showMessageBox(item.window,{message:'Login saved using macOS Keychain-backed encryption.',detail:'The device may still expire or revoke the session. No password is retained.'});
+  if (!item.window.isDestroyed()) await dialog.showMessageBox(item.window,{message:'Login saved using macOS Keychain-backed encryption.',detail:'The device may still expire or revoke the session. This command stores tokens only; Save Password and Sign In stores the password separately.'});
 }
 
 async function forgetLogin() {
@@ -261,6 +264,62 @@ ipcMain.handle('session:sound-output:set',async (event,enabled) => {
   }).catch(error=>{report(error);throw error;});
 });
 
+async function savePassword() {
+  const item=focusedSession();
+  if (!item) return;
+  const contents=item.window.webContents,frame=contents.mainFrame,generation=item.generation;
+  const url=contents.getURL(),marker=randomUUID();
+  passwords.requirePasswordSession({sender:contents,senderFrame:frame},sessions,data.devices);
+  const password=await contents.executeJavaScript(`(() => {
+    if (!/^#\\/login(?:[?]|$)/.test(location.hash) && location.pathname !== '/login') return null;
+    const inputs=document.querySelectorAll('.auth-form-container input[name="passwd"]');
+    if(inputs.length!==1) return null;
+    inputs[0].dataset.workspacePasswordSave=${JSON.stringify(marker)};
+    return inputs[0].value;
+  })()`);
+  if (typeof password!=='string' || !password.length) throw new Error('Enter the administrator password on the device login screen, then choose Save Password and Sign In.');
+  await serial(`credentials:${item.deviceId}`,async()=>{
+    passwords.requirePasswordSession({sender:contents,senderFrame:frame},sessions,data.devices);
+    if(generation!==item.generation || pendingRemovals.has(item.deviceId)) throw new Error('The device page changed. Save the password again from its login screen.');
+    try { await passwords.passwordEntry(item.deviceId).setPassword(password); }
+    catch { throw new Error('The password could not be saved to macOS Keychain.'); }
+  });
+  console.info('[workspace] device password saved to Keychain',{deviceId:item.deviceId});
+  if(!item.window.isDestroyed() && generation===item.generation && contents.getURL()===url) contents.send('session:password-saved',{marker,password});
+}
+
+async function forgetPassword() {
+  const item=focusedSession();
+  if(!item) return;
+  item.window.webContents.send('session:password-forgotten');
+  await serial(`credentials:${item.deviceId}`,async()=>{
+    try { await passwords.passwordEntry(item.deviceId).deletePassword(); }
+    catch { throw new Error('The saved password could not be removed from macOS Keychain.'); }
+  });
+  console.info('[workspace] device password forgotten',{deviceId:item.deviceId});
+}
+
+ipcMain.handle('session:password',async event=>{
+  const item=passwords.requirePasswordSession(event,sessions,data.devices);
+  const generation=item.generation,url=event.senderFrame.url;
+  const requireCurrent=()=>{
+    passwords.requirePasswordSession(event,sessions,data.devices);
+    const page=new URL(event.senderFrame.url);
+    if(generation!==item.generation || page.href!==url ||
+      (!/^#\/login(?:[?]|$)/.test(page.hash) && page.pathname!=='/login')) throw new Error('The device login page changed.');
+  };
+  await item.loginReady;
+  requireCurrent();
+  return serial(`credentials:${item.deviceId}`,async()=>{
+    requireCurrent();
+    let password;
+    try { password=await passwords.passwordEntry(item.deviceId).getPassword(); }
+    catch { throw new Error('The saved password could not be read from macOS Keychain. Sign in manually.'); }
+    requireCurrent();
+    return password;
+  });
+});
+
 ipcMain.handle('inventory:list',(event) => {
   requireInventory(event);
   return {devices:data.devices,sessions:[...sessions.values()].map(({id,deviceId,name,endpoint}) => ({id,deviceId,name,endpoint}))};
@@ -274,6 +333,8 @@ ipcMain.handle('inventory:remove',async (event,id) => {
   pendingRemovals.add(id);
   try {
     await serial(`credentials:${id}`,async()=>{
+      try { await passwords.passwordEntry(id).deletePassword(); }
+      catch { throw new Error('The saved password could not be removed from macOS Keychain. The device was not removed.'); }
       try { await unlink(path.join(app.getPath('userData'),`login-${id}.encrypted`)); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
       await updateData(current=>{
@@ -312,6 +373,8 @@ app.whenReady().then(async () => {
     {label:'Session',submenu:[{label:'Reconnect This Window',click:() => { const win=BrowserWindow.getFocusedWindow(); if (win && win !== inventory) win.reload(); }},
       {label:'Save This Login Securely',click:() => { void saveLogin().catch(report); }},
       {label:'Forget Saved Login',click:() => { void forgetLogin().catch(report); }},
+      {label:'Save Password and Sign In',click:() => { void savePassword().catch(report); }},
+      {label:'Forget Saved Password',click:() => { void forgetPassword().catch(report); }},
       {label:'Release Keyboard and Mouse',click:() => { focusedSession()?.window.webContents.send('session:release-input'); }},
       {label:'Choose Microphone on Next Capture',click:() => { const item=focusedSession(); if(item) void item.window.webContents.executeJavaScript('window.__workspaceCapture?.resetMicrophone()').catch(report); }},
       {label:'Choose Local Speaker…',click:() => { const item=focusedSession(); if(item) void item.window.webContents.executeJavaScript('window.__workspaceCapture?.chooseSpeaker()',true).catch(report); }},

@@ -35,6 +35,8 @@ jobs:
         run: npm run test:inventory
       - name: Exercise synthetic TLS sessions and window isolation
         run: npm run test:windows -- --ci
+      - name: Exercise saved-password authentication and isolation
+        run: npm run test:passwords
       - name: Archive application for manual inspection
         run: ditto -c -k --sequesterRsrc --keepParent "build/KVM Workspace-darwin-arm64/KVM Workspace.app" build/KVM-Workspace-macos-arm64.zip
       - uses: actions/upload-artifact@v4

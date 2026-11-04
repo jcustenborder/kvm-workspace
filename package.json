@@ -12,6 +12,7 @@
     "package": "node scripts/package.mjs",
     "test:windows": "node scripts/validate-windows.cjs",
     "test:inventory": "node scripts/validate-inventory.cjs",
+    "test:passwords": "node scripts/validate-passwords.cjs",
     "test:live": "node scripts/validate-live.cjs"
   },
   "devDependencies": {
@@ -20,6 +21,7 @@
     "playwright-core": "1.58.2"
   },
   "dependencies": {
+    "@napi-rs/keyring": "2.1.2",
     "electron-updater": "6.8.11"
   }
 }
