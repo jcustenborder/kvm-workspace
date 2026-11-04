@@ -20,6 +20,7 @@ async function run() {
       location.hash='/login';
       document.querySelector('#app').innerHTML='<div class="auth-form-container"><div class="login-form"><form class="login-form"><input type="password" name="passwd"></form><button class="operation-btn">Log In</button></div></div>';
       const input=document.querySelector('input');
+      if(location.search.includes('unrecognized')) input.removeAttribute('name');
       let value='';input.addEventListener('input',()=>value=input.value);
       if(location.search.includes('twofa')) input.insertAdjacentHTML('afterend','<input name="twofaCode">');
       document.querySelector('button').onclick=()=>{
@@ -64,20 +65,20 @@ async function run() {
         globalThis.savedPasswords=new Map();
         passwords.passwordEntry=id=>({
           getPassword:async()=>{if(globalThis.passwordReadFails)throw new Error('Keychain unavailable');if(globalThis.passwordReadGate)await passwordReadGate;return savedPasswords.get(id)??null;},
-          setPassword:async value=>{globalThis.passwordWriteStarted=true;if(globalThis.passwordWriteGate)await passwordWriteGate;savedPasswords.set(id,value);},
+          setPassword:async value=>{if(globalThis.passwordWriteFails)throw new Error('Keychain locked');savedPasswords.set(id,value);},
           deletePassword:async()=>{if(globalThis.passwordDeleteFails)throw new Error('Keychain locked');return savedPasswords.delete(id);}
         });
       }
     },{pin,realKeychain});
-    /** @param {string} label */
-    const menu=async label=>electron.evaluate(({Menu},label)=>Menu.getApplicationMenu().items.find(item=>item.label==='Session').submenu.items.find(item=>item.label===label).click(),label);
-    /** @param {import('playwright-core').Page} page */
-    const focus=async page=>{
-      await electron.evaluate(({app})=>app.focus({steal:true}));
-      await (await electron.browserWindow(page)).evaluate(async win=>{
-        win.show();win.focus();const deadline=Date.now()+5000;
-        while(!win.isFocused()) {if(Date.now()>deadline)throw new Error('Session window did not gain focus');await new Promise(resolve=>setTimeout(resolve,20));}
-      });
+    /** @param {string | null} value */
+    const editPassword=async value=>{
+      await inventory.locator('[data-action=edit]').first().click();
+      await inventory.waitForFunction(()=>document.querySelector('#device-password').value==='');
+      if(value===null)await inventory.locator('#device-remove-password').check();
+      else await inventory.locator('#device-password').fill(value);
+      await inventory.locator('#save-device').click();
+      await inventory.locator('#device-dialog').waitFor({state:'hidden'});
+      await inventory.waitForFunction(()=>document.querySelector('#device-password').value==='');
     };
     /** @param {string} id @param {string} [route] */
     const open=async(id,route='lan')=>{
@@ -85,22 +86,49 @@ async function run() {
       await inventory.evaluate(async({id,route})=>window.workspace.open(id,route),{id,route});
       const page=await next;await page.waitForSelector('input[name=passwd]',{state:'attached'});return page;
     };
-    await inventory.evaluate(async({ids,endpoint,tailnet})=>{
-      for(const id of ids)await window.workspace.save({id,name:'Same display name',lan:endpoint,tailnet});
-    },{ids,endpoint,tailnet});
+    await inventory.locator('#add-device').click();
+    await inventory.locator('#device-name').fill('Same display name');
+    await inventory.locator('#device-lan').fill(endpoint);
+    await inventory.locator('#device-tailnet').fill(tailnet);
+    await inventory.locator('#device-password').fill('fixture-only-P@ss"\u2603');
+    if(!realKeychain) {
+      await mkdir(path.join(temporary,'profile','devices.json'));
+      await inventory.locator('#save-device').click();
+      await inventory.locator('#device-error').filter({hasText:'password was updated'}).waitFor();
+      assert.equal((await inventory.evaluate(()=>window.workspace.list())).devices.length,0);
+      await rm(path.join(temporary,'profile','devices.json'),{recursive:true});
+    }
+    await inventory.locator('#save-device').click();
+    await inventory.locator('#device-dialog').waitFor({state:'hidden'});
+    ids[0]=(await inventory.evaluate(()=>window.workspace.list())).devices[0].id;
+    if(!realKeychain) assert.deepEqual(await electron.evaluate(()=>[...savedPasswords.keys()]),[ids[0]],'Retry must reuse the credential ID instead of orphaning the first password');
+    await inventory.evaluate(async({id,endpoint,tailnet})=>window.workspace.save({id,name:'Same display name',lan:endpoint,tailnet}),{id:ids[1],endpoint,tailnet});
     let page=await open(ids[0]);
-    await page.locator('input[name=passwd]').fill('fixture-only-P@ss"\u2603');
-    await focus(page);
-    await menu('Save Password and Sign In');
     await page.waitForSelector('#stream-box');
     assert.equal(await page.evaluate(()=>submissions),1);
     assert.equal(await page.evaluate(()=>loginVisibleOnSubmit),false);
+    for(const invalid of ['',false,{},42]) {
+      await assert.rejects(inventory.evaluate(async({id,endpoint,invalid})=>window.workspace.save({id,name:'Same display name',lan:endpoint,tailnet:''},invalid),{id:ids[0],endpoint,invalid}),/nonempty password/);
+    }
+    await assert.rejects(inventory.evaluate(async({id,endpoint})=>window.workspace.save({id,name:'',lan:endpoint,tailnet:''},'must-not-save'),{id:ids[0],endpoint}),/device name/);
+    const listed=await inventory.evaluate(()=>window.workspace.list());
+    const persisted=JSON.parse(await readFile(path.join(temporary,'profile','devices.json'),'utf8'));
+    for(const device of [listed.devices[0],persisted.devices[0]]) assert.deepEqual(Object.keys(device).sort(),['id','lan','name','tailnet']);
+    await page.reload();await page.waitForSelector('#stream-box');
+    console.log('PASS: invalid credential updates and device details cannot replace a working password; inventory contains no credential fields');
     await page.close();
     page=await open(ids[0],'tailnet');
     await page.waitForSelector('#stream-box');
     assert.equal(await page.evaluate(()=>submissions),1);
     assert.equal(await page.evaluate(()=>loginVisibleOnSubmit),false);
-    console.log('PASS: explicit save and automatic login share a device ID across LAN/Tailscale origins');
+    await editPassword('');
+    await inventory.locator('[data-action=edit]').first().click();
+    await inventory.locator('#device-password').fill('cancelled-wrong-password');
+    await inventory.locator('#device-remove-password').check();
+    await inventory.locator('#cancel-device').click();
+    await inventory.waitForFunction(()=>document.querySelector('#device-password').value==='');
+    await page.reload();await page.waitForSelector('#stream-box');
+    console.log('PASS: editor save logs in across routes; blank preserves and Cancel discards password edits');
     await page.evaluate(()=>login());await page.waitForSelector('#stream-box');
     assert.equal(await page.evaluate(()=>submissions),2);
     console.log('PASS: SPA session expiry automatically reauthenticates');
@@ -134,20 +162,25 @@ async function run() {
     await page.waitForTimeout(400);
     assert.equal(await page.evaluate(()=>submissions),1);
     console.log('PASS: rejected password reveals login without retry');
-    await page.locator('input[name=passwd]').fill('replacement-rejected');
-    await focus(page);
-    await menu('Save Password and Sign In');
-    await page.waitForFunction(()=>submissions===2);
-    await page.waitForFunction(()=>getComputedStyle(document.querySelector('.auth-form-container')).visibility==='visible');
+    await inventory.locator('[data-action=edit]').first().click();
+    await inventory.locator('#device-password').fill('replacement-rejected');
+    await inventory.locator('#device-remove-password').check();
+    await inventory.locator('#save-device').click();
+    await inventory.locator('#device-dialog').waitFor({state:'hidden'});
     await page.goto(tailnet+'/');await page.waitForSelector('.ant-message-error');
     assert.equal(await page.locator('input[name=passwd]').inputValue(),'replacement-rejected');
-    await page.locator('input[name=passwd]').fill('fixture-only-P@ss"\u2603');
-    await menu('Save Password and Sign In');await page.waitForSelector('#stream-box');
+    await editPassword('fixture-only-P@ss"\u2603');
+    await page.goto(tailnet+'/');await page.waitForSelector('#stream-box');
     console.log('PASS: explicit save replaces a rejected password and can recover');
     await page.goto(tailnet+'/?twofa=1');await page.waitForSelector('input[name=twofaCode]');
     await page.waitForFunction(()=>getComputedStyle(document.querySelector('.auth-form-container')).visibility==='visible');
     assert.equal(await page.evaluate(()=>submissions),0);
     console.log('PASS: two-factor authentication stays available for manual entry');
+    await page.goto(tailnet+'/?unrecognized=1');
+    await page.getByRole('status').filter({hasText:'not recognized'}).waitFor();
+    assert.equal(await page.locator('input[type=password]').inputValue(),'');
+    assert.equal(await page.evaluate(()=>submissions),0);
+    console.log('PASS: unrecognized firmware login reports why manual authentication is needed');
     await page.goto(tailnet+'/');await page.waitForSelector('#stream-box');
     await page.evaluate(()=>{login();location.hash='/settings';});
     await page.waitForTimeout(200);
@@ -178,26 +211,28 @@ async function run() {
       assert.equal(await page.locator('input[name=passwd]').inputValue(),'manual-entry-after-timeout');
       assert.equal(await page.evaluate(()=>submissions),0);
       console.log('PASS: bounded timeout restores login; a late credential cannot overwrite manual input');
-      for(const navigate of [false,true]) {
-        await page.evaluate(()=>{location.hash='/login';});
-        await electron.evaluate(()=>{globalThis.passwordWriteStarted=false;globalThis.passwordWriteGate=new Promise(resolve=>{globalThis.releasePasswordWrite=resolve;});});
-        await page.locator('input[name=passwd]').fill('fixture-only-P@ss"\u2603');
-        await focus(page);await menu('Save Password and Sign In');
-        await electron.evaluate(async()=>{
-          const deadline=Date.now()+5000;
-          while(!passwordWriteStarted) {if(Date.now()>deadline)throw new Error('Password save did not start: '+JSON.stringify(passwordErrors));await new Promise(resolve=>setTimeout(resolve,20));}
-        });
-        if(navigate)await page.evaluate(()=>{location.hash='/settings';});
-        await page.locator('input[name=passwd]').fill('newer-manual-correction');
-        await electron.evaluate(()=>{releasePasswordWrite();globalThis.passwordWriteGate=null;});
-        await page.waitForTimeout(250);
-        assert.equal(await page.locator('input[name=passwd]').inputValue(),'newer-manual-correction');
-        assert.equal(await page.evaluate(()=>submissions),0);
-      }
-      console.log('PASS: delayed save completion preserves newer manual input and never clears settings fields');
+      await electron.evaluate(()=>{globalThis.passwordWriteFails=true;});
+      await inventory.locator('[data-action=edit]').first().click();
+      await inventory.locator('#device-password').fill('failed-write');
+      await inventory.locator('#save-device').click();
+      await inventory.locator('#device-error').filter({hasText:'Keychain'}).waitFor();
+      assert.equal(await inventory.locator('#device-dialog').isVisible(),true);
+      await inventory.locator('#cancel-device').click();
+      await electron.evaluate(()=>{globalThis.passwordWriteFails=false;});
+      console.log('PASS: Keychain save failures stay visible and retryable in the editor');
+      await electron.evaluate(()=>{globalThis.passwordDeleteFails=true;});
+      await inventory.locator('[data-action=edit]').first().click();
+      await inventory.locator('#device-remove-password').check();
+      await inventory.locator('#save-device').click();
+      await inventory.locator('#device-error').filter({hasText:'Keychain'}).waitFor();
+      await inventory.locator('#cancel-device').click();
+      await electron.evaluate(()=>{globalThis.passwordDeleteFails=false;});
+      await page.goto(tailnet+'/');await page.waitForSelector('#stream-box');
+      console.log('PASS: failed password removal is reported and preserves the working credential');
     }
     await page.close();
     const other=await open(ids[1]);
+    await other.getByRole('status').filter({hasText:'No password is saved'}).waitFor();
     await other.waitForFunction(()=>getComputedStyle(document.querySelector('.auth-form-container')).visibility==='visible');
     assert.equal(await other.locator('input[name=passwd]').inputValue(),'');
     assert.equal(await other.evaluate(()=>submissions),0);
@@ -205,19 +240,19 @@ async function run() {
     console.log('PASS: identically named devices do not share passwords or expose credential IPC');
     await other.close();
     page=await open(ids[0]);await page.waitForSelector('#stream-box');
-    await focus(page);
     if(!realKeychain) {
       await electron.evaluate(()=>{globalThis.passwordReadGate=new Promise(resolve=>{globalThis.releasePasswordRead=resolve;});});
       await page.evaluate(()=>login());
       await page.getByRole('status').filter({hasText:'Signing in with'}).waitFor();
     }
-    await menu('Forget Saved Password');
+    const forgetting=editPassword(null);
     if(!realKeychain) {
       await page.waitForFunction(()=>getComputedStyle(document.querySelector('.auth-form-container')).visibility==='visible',null,{timeout:3000});
       await electron.evaluate(()=>{releasePasswordRead();globalThis.passwordReadGate=null;});
       await page.waitForTimeout(250);
       assert.equal(await page.locator('input[name=passwd]').inputValue(),'');
     }
+    await forgetting;
     await page.evaluate(()=>login());
     await page.waitForFunction(()=>getComputedStyle(document.querySelector('.auth-form-container')).visibility==='visible');
     assert.equal(await page.locator('input[name=passwd]').inputValue(),'');

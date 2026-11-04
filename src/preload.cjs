@@ -2,8 +2,8 @@
 const {contextBridge,ipcRenderer} = require('electron');
 contextBridge.exposeInMainWorld('workspace', {
   list: () => ipcRenderer.invoke('inventory:list'),
-  /** @param {object} device */
-  save: (device) => ipcRenderer.invoke('inventory:save',device),
+  /** @param {object} device @param {string | null} [passwordChange] */
+  save: (device,passwordChange) => ipcRenderer.invoke('inventory:save',device,passwordChange),
   /** @param {string} id */
   remove: (id) => ipcRenderer.invoke('inventory:remove',id),
   /** @param {string} id @param {'lan'|'tailnet'} route */

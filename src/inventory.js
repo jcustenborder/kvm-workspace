@@ -5,7 +5,7 @@
 /**
  * @typedef {object} WorkspaceAPI
  * @property {() => Promise<{devices: Device[], sessions: Session[]}>} list
- * @property {(device: Device) => Promise<void>} save
+ * @property {(device: Device, passwordChange?: string | null) => Promise<void>} save
  * @property {(id: string) => Promise<void>} remove
  * @property {(id: string, route: 'lan' | 'tailnet') => Promise<void>} open
  * @property {(sessionId: string) => Promise<void>} focus
@@ -41,6 +41,8 @@ const deviceFields = /** @type {HTMLFieldSetElement} */ (get("#device-fields"));
 const nameInput = /** @type {HTMLInputElement} */ (get("#device-name"));
 const lanInput = /** @type {HTMLInputElement} */ (get("#device-lan"));
 const tailnetInput = /** @type {HTMLInputElement} */ (get("#device-tailnet"));
+const passwordInput = /** @type {HTMLInputElement} */ (get("#device-password"));
+const removePassword = /** @type {HTMLInputElement} */ (get("#device-remove-password"));
 const saveButton = /** @type {HTMLButtonElement} */ (get("#save-device"));
 const cancelDevice = /** @type {HTMLButtonElement} */ (get("#cancel-device"));
 const deviceError = get("#device-error");
@@ -177,7 +179,7 @@ function requestRefresh() {
 
 /** @param {Device | null} [device] */
 function showEditor(device = null) {
-  editingId = device?.id ?? null;
+  editingId = device?.id ?? crypto.randomUUID();
   deviceForm.reset();
   nameInput.value = device?.name ?? "";
   lanInput.value = device?.lan ?? "";
@@ -206,7 +208,7 @@ async function saveDevice(event) {
   deviceError.hidden = true;
   clearError();
   try {
-    await workspace.save(device);
+    await workspace.save(device, passwordInput.value || (removePassword.checked ? null : undefined));
     deviceDialog.close();
     announcement.textContent = `${device.name} saved.`;
   } catch (error) {
@@ -269,6 +271,7 @@ get("#remove-form").addEventListener("submit", removeDevice);
 cancelDevice.addEventListener("click", () => deviceDialog.close());
 cancelRemove.addEventListener("click", () => removeDialog.close());
 deviceDialog.addEventListener("cancel", (/** @type {Event} */ event) => { if (saving) event.preventDefault(); });
+deviceDialog.addEventListener("close", () => { passwordInput.value = ""; removePassword.checked = false; });
 removeDialog.addEventListener("cancel", (/** @type {Event} */ event) => { if (removing) event.preventDefault(); });
 
 if (typeof workspace?.onChanged === "function") {

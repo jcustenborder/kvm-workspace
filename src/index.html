@@ -73,9 +73,15 @@
             <input id="device-tailnet" name="tailnet" type="text" inputmode="url" placeholder="kvm.example.ts.net" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="tailnet-help">
             <p class="field-help" id="tailnet-help">For access through your existing tailnet.</p>
           </div>
+          <div class="form-field">
+            <label for="device-password">Administrator password <span class="optional">optional</span></label>
+            <input id="device-password" name="password" type="password" autocomplete="new-password" aria-describedby="password-help">
+            <p class="field-help" id="password-help">Saved in macOS Keychain for automatic sign-in. Leave blank to keep the saved password.</p>
+          </div>
+          <label><input id="device-remove-password" type="checkbox"> Remove saved password</label>
         </fieldset>
         <p class="notice error" id="device-error" role="alert" tabindex="-1" hidden></p>
-        <p class="dialog-note">Sign in directly on your KVM in its session window.</p>
+        <p class="dialog-note">Without a saved password, sign in directly in the session window.</p>
         <div class="dialog-actions">
           <button id="cancel-device" type="button">Cancel</button>
           <button class="primary" id="save-device" type="submit">Add KVM</button>

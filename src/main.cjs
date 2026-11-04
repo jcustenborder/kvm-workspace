@@ -237,7 +237,7 @@ async function saveLogin() {
     const bytes = await safeStorage.encryptStringAsync(JSON.stringify({endpoint:item.endpoint,storage}));
     await writeFile(path.join(app.getPath('userData'),`login-${item.deviceId}.encrypted`),bytes,{mode:0o600});
   });
-  if (!item.window.isDestroyed()) await dialog.showMessageBox(item.window,{message:'Login saved using macOS Keychain-backed encryption.',detail:'The device may still expire or revoke the session. This command stores tokens only; Save Password and Sign In stores the password separately.'});
+  if (!item.window.isDestroyed()) await dialog.showMessageBox(item.window,{message:'Login saved using macOS Keychain-backed encryption.',detail:'The device may still expire or revoke the session. Set an administrator password under Devices → Edit for automatic sign-in.'});
 }
 
 async function forgetLogin() {
@@ -264,41 +264,6 @@ ipcMain.handle('session:sound-output:set',async (event,enabled) => {
   }).catch(error=>{report(error);throw error;});
 });
 
-async function savePassword() {
-  const item=focusedSession();
-  if (!item) return;
-  const contents=item.window.webContents,frame=contents.mainFrame,generation=item.generation;
-  const url=contents.getURL(),marker=randomUUID();
-  passwords.requirePasswordSession({sender:contents,senderFrame:frame},sessions,data.devices);
-  const password=await contents.executeJavaScript(`(() => {
-    if (!/^#\\/login(?:[?]|$)/.test(location.hash) && location.pathname !== '/login') return null;
-    const inputs=document.querySelectorAll('.auth-form-container input[name="passwd"]');
-    if(inputs.length!==1) return null;
-    inputs[0].dataset.workspacePasswordSave=${JSON.stringify(marker)};
-    return inputs[0].value;
-  })()`);
-  if (typeof password!=='string' || !password.length) throw new Error('Enter the administrator password on the device login screen, then choose Save Password and Sign In.');
-  await serial(`credentials:${item.deviceId}`,async()=>{
-    passwords.requirePasswordSession({sender:contents,senderFrame:frame},sessions,data.devices);
-    if(generation!==item.generation || pendingRemovals.has(item.deviceId)) throw new Error('The device page changed. Save the password again from its login screen.');
-    try { await passwords.passwordEntry(item.deviceId).setPassword(password); }
-    catch { throw new Error('The password could not be saved to macOS Keychain.'); }
-  });
-  console.info('[workspace] device password saved to Keychain',{deviceId:item.deviceId});
-  if(!item.window.isDestroyed() && generation===item.generation && contents.getURL()===url) contents.send('session:password-saved',{marker,password});
-}
-
-async function forgetPassword() {
-  const item=focusedSession();
-  if(!item) return;
-  item.window.webContents.send('session:password-forgotten');
-  await serial(`credentials:${item.deviceId}`,async()=>{
-    try { await passwords.passwordEntry(item.deviceId).deletePassword(); }
-    catch { throw new Error('The saved password could not be removed from macOS Keychain.'); }
-  });
-  console.info('[workspace] device password forgotten',{deviceId:item.deviceId});
-}
-
 ipcMain.handle('session:password',async event=>{
   const item=passwords.requirePasswordSession(event,sessions,data.devices);
   const generation=item.generation,url=event.senderFrame.url;
@@ -316,6 +281,7 @@ ipcMain.handle('session:password',async event=>{
     try { password=await passwords.passwordEntry(item.deviceId).getPassword(); }
     catch { throw new Error('The saved password could not be read from macOS Keychain. Sign in manually.'); }
     requireCurrent();
+    console.info('[workspace] device password lookup completed',{deviceId:item.deviceId,found:typeof password==='string' && password.length>0});
     return password;
   });
 });
@@ -324,7 +290,33 @@ ipcMain.handle('inventory:list',(event) => {
   requireInventory(event);
   return {devices:data.devices,sessions:[...sessions.values()].map(({id,deviceId,name,endpoint}) => ({id,deviceId,name,endpoint}))};
 });
-ipcMain.handle('inventory:save',async (event,value) => { requireInventory(event); await updateData(current=>({...current,devices:updateDevices(current.devices,value)})); });
+ipcMain.handle('inventory:save',async (event,value,passwordChange) => {
+  requireInventory(event);
+  if (passwordChange!==undefined && passwordChange!==null && (typeof passwordChange!=='string' || !passwordChange.length)) throw new Error('Enter a nonempty password or choose Remove saved password.');
+  // Validate device details before changing its Keychain entry.
+  updateDevices(data.devices,value);
+  if (pendingRemovals.has(value.id)) throw new Error('This device is being removed.');
+  if (passwordChange===null) {
+    for (const item of sessions.values()) if (item.deviceId===value.id) item.window.webContents.send('session:password-forgotten');
+  }
+  await serial(`credentials:${value.id}`,async()=>{
+    requireInventory(event);
+    if (pendingRemovals.has(value.id)) throw new Error('This device is being removed.');
+    if (passwordChange!==undefined) {
+      try {
+        const entry=passwords.passwordEntry(value.id);
+        if (passwordChange===null) await entry.deletePassword();
+        else await entry.setPassword(passwordChange);
+      } catch { throw new Error('The password could not be updated in macOS Keychain. Device changes were not saved.'); }
+      console.info('[workspace] device password updated in Keychain',{deviceId:value.id,removed:passwordChange===null});
+    }
+    try { await updateData(current=>({...current,devices:updateDevices(current.devices,value)})); }
+    catch (error) {
+      if (passwordChange!==undefined) throw new Error('The password was updated in Keychain, but device details could not be saved. Retry saving the device.',{cause:error});
+      throw error;
+    }
+  });
+});
 ipcMain.handle('inventory:remove',async (event,id) => {
   requireInventory(event);
   if (pendingOpens.has(id) || [...sessions.values()].some((item) => item.deviceId === id)) throw new Error('Close this device’s session before removing it.');
@@ -373,8 +365,6 @@ app.whenReady().then(async () => {
     {label:'Session',submenu:[{label:'Reconnect This Window',click:() => { const win=BrowserWindow.getFocusedWindow(); if (win && win !== inventory) win.reload(); }},
       {label:'Save This Login Securely',click:() => { void saveLogin().catch(report); }},
       {label:'Forget Saved Login',click:() => { void forgetLogin().catch(report); }},
-      {label:'Save Password and Sign In',click:() => { void savePassword().catch(report); }},
-      {label:'Forget Saved Password',click:() => { void forgetPassword().catch(report); }},
       {label:'Release Keyboard and Mouse',click:() => { focusedSession()?.window.webContents.send('session:release-input'); }},
       {label:'Choose Microphone on Next Capture',click:() => { const item=focusedSession(); if(item) void item.window.webContents.executeJavaScript('window.__workspaceCapture?.resetMicrophone()').catch(report); }},
       {label:'Choose Local Speaker…',click:() => { const item=focusedSession(); if(item) void item.window.webContents.executeJavaScript('window.__workspaceCapture?.chooseSpeaker()',true).catch(report); }},
