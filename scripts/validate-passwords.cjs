@@ -20,9 +20,12 @@ async function run() {
       location.hash='/login';
       document.querySelector('#app').innerHTML='<div class="auth-form-container"><div class="login-form"><form class="login-form"><input type="password" name="passwd"></form><button class="operation-btn">Log In</button></div></div>';
       const input=document.querySelector('input');
+      // Ant Design renders the firmware form field's name as an input ID.
+      if(location.search.includes('rendered')) {input.removeAttribute('name');input.id='form_item_passwd';}
       if(location.search.includes('unrecognized')) input.removeAttribute('name');
       let value='';input.addEventListener('input',()=>value=input.value);
-      if(location.search.includes('twofa')) input.insertAdjacentHTML('afterend','<input name="twofaCode">');
+      if(location.search.includes('twofa')) input.insertAdjacentHTML('afterend',location.search.includes('rendered') ? '<input id="form_item_twofaCode">' : '<input name="twofaCode">');
+      if(location.search.includes('ambiguous')) input.insertAdjacentHTML('afterend','<input type="password" name="passwd">');
       document.querySelector('button').onclick=()=>{
         void fetch('/attempt');
         window.loginVisibleOnSubmit=getComputedStyle(document.querySelector('.auth-form-container')).visibility!=='hidden';
@@ -107,6 +110,11 @@ async function run() {
     await page.waitForSelector('#stream-box');
     assert.equal(await page.evaluate(()=>submissions),1);
     assert.equal(await page.evaluate(()=>loginVisibleOnSubmit),false);
+    await page.goto(endpoint+'/?rendered=1');
+    await page.waitForSelector('#stream-box');
+    assert.equal(await page.evaluate(()=>submissions),1);
+    assert.equal(await page.evaluate(()=>loginVisibleOnSubmit),false);
+    console.log('PASS: actual firmware ID-only password markup automatically authenticates');
     for(const invalid of ['',false,{},42]) {
       await assert.rejects(inventory.evaluate(async({id,endpoint,invalid})=>window.workspace.save({id,name:'Same display name',lan:endpoint,tailnet:''},invalid),{id:ids[0],endpoint,invalid}),/nonempty password/);
     }
@@ -176,6 +184,17 @@ async function run() {
     await page.waitForFunction(()=>getComputedStyle(document.querySelector('.auth-form-container')).visibility==='visible');
     assert.equal(await page.evaluate(()=>submissions),0);
     console.log('PASS: two-factor authentication stays available for manual entry');
+    await page.goto(tailnet+'/?rendered=1&twofa=1');
+    await page.getByRole('status').filter({hasText:'Enter your two-factor code'}).waitFor();
+    assert.equal(await page.locator('#form_item_passwd').inputValue(),'fixture-only-P@ss"\u2603');
+    assert.equal(await page.locator('#form_item_twofaCode').inputValue(),'');
+    assert.equal(await page.evaluate(()=>submissions),0);
+    console.log('PASS: ID-only two-factor fields prevent automatic submission');
+    await page.goto(tailnet+'/?rendered=1&ambiguous=1');
+    await page.getByRole('status').filter({hasText:'not recognized'}).waitFor();
+    assert.deepEqual(await page.locator('input[type=password]').evaluateAll(inputs=>inputs.map(input=>input.value)),['','']);
+    assert.equal(await page.evaluate(()=>submissions),0);
+    console.log('PASS: ambiguous password fields never receive a saved credential');
     await page.goto(tailnet+'/?unrecognized=1');
     await page.getByRole('status').filter({hasText:'not recognized'}).waitFor();
     assert.equal(await page.locator('input[type=password]').inputValue(),'');

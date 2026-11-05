@@ -36,6 +36,29 @@
 - Real native WKWebView feasibility probe authenticated and produced advancing
   video frame callbacks. It did not qualify capture or the complete native approach.
 
+### Automatic password login: rendered firmware fields
+
+The reported unrecognized-login message was traced to the real device's rendered
+DOM: its password input has `id="form_item_passwd"` and no `name` attribute. The
+previous selector required `name="passwd"`, as did the synthetic fixture, so those
+tests missed the mismatch. The login container and operation button matched.
+
+Automatic login now accepts that exact field ID as well as the existing name,
+still requiring a unique field inside the recognized login container and route.
+The matching Ant Design two-factor field ID is also recognized so automatic
+submission cannot bypass the manual code-entry step. Packaged synthetic checks
+cover ID-only password login, ID-only two-factor fallback, ambiguous fields,
+and the existing named-field paths, including native macOS Keychain round trips.
+The ID-only password regression failed before the selector fix and passed after it.
+
+The rebuilt packaged app was also checked against the operator-selected device's
+actual page using a disposable profile and a dummy password. It filled the ID-only
+field and initiated the login click. A capture handler intercepted that click
+before firmware handlers; non-GET requests were additionally blocked. No
+authentication request was sent, and no stored real password was read. Successful
+real-device authentication with the saved administrator password remains a live
+acceptance check.
+
 ## Concrete remaining acceptance gates
 
 1. **Tailnet path:** this RM1PE reports `/api/tailscale/status` `running:false`.

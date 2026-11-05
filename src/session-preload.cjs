@@ -142,13 +142,14 @@ window.addEventListener('DOMContentLoaded',()=>{
         const button=container?.querySelector('button.operation-btn');
         const loading=button?.classList.contains('ant-btn-loading');
         if(loading) sawLoading=true;
-        if(container?.querySelector('input[name=twofaCode]') || document.querySelector('.ant-message-error,.ant-form-item-has-error') ||
+        if(container?.querySelector('input:is([name=twofaCode], #form_item_twofaCode)') || document.querySelector('.ant-message-error,.ant-form-item-has-error') ||
             (sawLoading && !loading)) reveal('Automatic sign-in did not complete. Sign in manually or update the password under Devices → Edit.');
       }
       return;
     }
     if(attempted) return;
-    const inputs=document.querySelectorAll('.auth-form-container input[name=passwd]');
+    // Ant Design's rendered inputs use form_item_* IDs, without name attributes.
+    const inputs=document.querySelectorAll('.auth-form-container input:is([name=passwd], #form_item_passwd)');
     const input=inputs.length===1 ? inputs[0] : null;
     const next=input?.closest('.auth-form-container');
     const button=next?.querySelector('button.operation-btn');
@@ -172,7 +173,7 @@ window.addEventListener('DOMContentLoaded',()=>{
       if(input.value) {reveal();return;}
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,password);
       input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));
-      if(container.querySelector('input[name=twofaCode]')) {reveal('Enter your two-factor code, then choose Log In.');return;}
+      if(container.querySelector('input:is([name=twofaCode], #form_item_twofaCode)')) {reveal('Enter your two-factor code, then choose Log In.');return;}
       submitted=true;button.click();
     }).catch(()=>{
       if(current===version) reveal('The saved password could not be loaded. Check macOS Keychain or sign in manually.');
