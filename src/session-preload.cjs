@@ -115,6 +115,16 @@ window.addEventListener('DOMContentLoaded',()=>{
   /** @type {HTMLElement | null} */
   let container=null,status=null;
   let originalVisibility='',deadline;
+  /** @param {string} message */
+  function showStatus(message) {
+    if(!status) {
+      status=document.createElement('div');status.setAttribute('role','status');
+      status.style.cssText='position:fixed;inset:30% 15% auto;text-align:center;font:16px system-ui;z-index:2147483647;pointer-events:none';
+      document.body.append(status);
+    }
+    if(status.textContent!==message) status.textContent=message;
+    status.hidden=false;
+  }
   /** @param {string} [message] */
   function reveal(message='') {
     version++;pending=false;clearTimeout(deadline);
@@ -133,7 +143,7 @@ window.addEventListener('DOMContentLoaded',()=>{
         const loading=button?.classList.contains('ant-btn-loading');
         if(loading) sawLoading=true;
         if(container?.querySelector('input[name=twofaCode]') || document.querySelector('.ant-message-error,.ant-form-item-has-error') ||
-           (sawLoading && !loading)) reveal('Automatic sign-in did not complete. Sign in manually or use Session → Save Password and Sign In to update the saved password.');
+            (sawLoading && !loading)) reveal('Automatic sign-in did not complete. Sign in manually or update the password under Devices → Edit.');
       }
       return;
     }
@@ -142,22 +152,23 @@ window.addEventListener('DOMContentLoaded',()=>{
     const input=inputs.length===1 ? inputs[0] : null;
     const next=input?.closest('.auth-form-container');
     const button=next?.querySelector('button.operation-btn');
-    if(!(input instanceof HTMLInputElement) || !(next instanceof HTMLElement) || !(button instanceof HTMLButtonElement) ||
-       next.querySelector('.ant-spin-spinning') || button.disabled) return;
+    if(!(input instanceof HTMLInputElement) || !(next instanceof HTMLElement) || !(button instanceof HTMLButtonElement)) {
+      if(document.querySelector('input[type=password]')) showStatus('This device login form is not recognized for automatic sign-in. Sign in manually.');
+      return;
+    }
+    if(next.querySelector('.ant-spin-spinning') || button.disabled) return;
     attempted=true;
     // Never replace a password the user has already started entering.
     if(input.value) return;
     container=next;originalVisibility=container.style.visibility;
     container.style.visibility='hidden';
-    status?.remove();status=document.createElement('div');status.setAttribute('role','status');
-    status.style.cssText='position:fixed;inset:30% 15% auto;text-align:center;font:16px system-ui;z-index:2147483647';
-    status.textContent='Signing in with the saved device password…';document.body.append(status);
+    showStatus('Signing in with the saved device password…');
     pending=true;submitted=false;sawLoading=false;
     const current=++version;
     deadline=setTimeout(()=>reveal('Automatic sign-in timed out. Sign in manually.'),15000);
     void ipcRenderer.invoke('session:password').then(password=>{
       if(current!==version || !input.isConnected || !/^#\/login(?:[?]|$)/.test(location.hash) && location.pathname!=='/login') return;
-      if(!password) {reveal();return;}
+      if(!password) {reveal('No password is saved for this device. Set it under Devices → Edit, then reconnect, or sign in manually.');return;}
       if(input.value) {reveal();return;}
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,password);
       input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));
@@ -172,13 +183,6 @@ window.addEventListener('DOMContentLoaded',()=>{
   window.addEventListener('hashchange',inspect);
   window.addEventListener('popstate',inspect);
   window.addEventListener('input',event=>{if(pending && event.isTrusted)reveal();},true);
-  ipcRenderer.on('session:password-saved',(_event,{marker,password})=>{
-    if(!/^#\/login(?:[?]|$)/.test(location.hash) && location.pathname!=='/login') return;
-    const input=document.querySelector('.auth-form-container input[name=passwd]');
-    if(!(input instanceof HTMLInputElement) || input.dataset.workspacePasswordSave!==marker || input.value!==password) return;
-    reveal();attempted=false;input.value='';
-    inspect();
-  });
   ipcRenderer.on('session:password-forgotten',()=>{attempted=true;reveal();});
   window.addEventListener('pagehide',()=>{reveal();observer.disconnect();},{once:true});
   inspect();

@@ -53,15 +53,16 @@ open "build/KVM Workspace-darwin-arm64/KVM Workspace.app"
 ```
 
 1. Choose **Add KVM**. Save a friendly name and a LAN address, tailnet address,
-   or both. HTTPS IP addresses, IPv6 addresses and MagicDNS names are supported.
+   or both. Optionally enter the administrator password for automatic sign-in.
+   HTTPS IP addresses, IPv6 addresses and MagicDNS names are supported.
 2. Choose **Open LAN** or **Open Tailnet**. Each device opens in its own window.
    Changing routes requires closing that device's existing window; other
    sessions remain connected.
 3. Approve an unfamiliar device certificate only after checking its displayed
    SHA-256 fingerprint. Trust is saved for the selected endpoint. Certificate
    changes require fresh approval; there is no global TLS bypass.
-4. Sign in using the KVM's administrator password. A GL.iNet account is not
-   required for direct device access.
+4. The saved administrator password signs in automatically. Without one, sign
+   in in the session window. A GL.iNet account is not required for direct access.
 
 The actual device's **Session, Toolbox, Accessories, Virtual Media, Apps Center,
 Help, and settings** interfaces remain available. They are served by the KVM's
@@ -99,11 +100,13 @@ in this application's bundle.
 
 For automatic authentication even after login tokens expire:
 
-1. Enter or paste the KVM administrator password into its login field. Until the
-   clipboard shortcut issue is resolved, use **Edit → Paste** if ⌘V does not work.
-2. Choose **Session → Save Password and Sign In**. This explicitly saves the
-   password in native macOS Keychain and submits the login form.
-3. On subsequent opens or session expiry, the application fills and submits the
+1. In the workspace's **Devices** area, choose **Edit** for the KVM (or **Add KVM**
+   for a new device).
+2. Enter or paste its **Administrator password**, then save. The password is
+   stored in native macOS Keychain. The editor never loads the existing password;
+   leaving the field blank keeps it. Cancel discards password edits.
+3. Open the device, or use **Session → Reconnect This Window** if it is already
+   showing a login screen. On subsequent opens or session expiry, the application fills and submits the
    recognized device login form automatically. A signing-in status replaces the
    form while authentication is pending. An incorrect password, Keychain error,
    or 15-second timeout reveals manual login without repeated attempts. If 2FA
@@ -116,11 +119,18 @@ requires normal HTTPS certificate verification. Passwords are filled only in the
 device's administrator login form, never in remote-host or password-change fields.
 Firmware changes that alter the recognized form may require manual login.
 
-To replace a rejected password, enter the corrected value and choose **Save
-Password and Sign In** again. **Session → Forget Saved Password** removes the
-Keychain password without disconnecting the current session; removing the device
-also deletes its password. macOS may request Keychain authorization. Passwords
+To replace a rejected password, enter the corrected value under **Devices → Edit**
+and save, then reconnect. To delete it, leave the password field empty, select
+**Remove saved password**, and save. A nonempty replacement takes precedence
+over removal. Removing the password does not disconnect the current session;
+removing the device also deletes its password. macOS may request Keychain authorization. Passwords
 are not written into inventory files, saved-token files, or browser storage.
+
+The login status distinguishes a missing saved password, an unrecognized login
+form, a Keychain read failure, and a timed-out or unsuccessful sign-in. The
+**Authentication required** badge alone only means a password field is present.
+The editor-to-login flow is checked with synthetic HTTPS pages and native
+Keychain; real-device automatic sign-in still requires live validation.
 
 The older token-only option remains available:
 
