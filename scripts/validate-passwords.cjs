@@ -90,7 +90,7 @@ async function run() {
       const page=await next;await page.waitForSelector('input[name=passwd]',{state:'attached'});return page;
     };
     await inventory.locator('#add-device').click();
-    await inventory.locator('#device-name').fill('Same display name');
+    await inventory.locator('#device-name').fill('password-fixture');
     await inventory.locator('#device-lan').fill(endpoint);
     await inventory.locator('#device-tailnet').fill(tailnet);
     await inventory.locator('#device-password').fill('fixture-only-P@ss"\u2603');
@@ -105,7 +105,7 @@ async function run() {
     await inventory.locator('#device-dialog').waitFor({state:'hidden'});
     ids[0]=(await inventory.evaluate(()=>window.workspace.list())).devices[0].id;
     if(!realKeychain) assert.deepEqual(await electron.evaluate(()=>[...savedPasswords.keys()]),[ids[0]],'Retry must reuse the credential ID instead of orphaning the first password');
-    await inventory.evaluate(async({id,endpoint,tailnet})=>window.workspace.save({id,name:'Same display name',lan:endpoint,tailnet}),{id:ids[1],endpoint,tailnet});
+    await inventory.evaluate(async({id,endpoint,tailnet})=>window.workspace.save({id,name:'other-password-fixture',lan:endpoint,tailnet}),{id:ids[1],endpoint,tailnet});
     let page=await open(ids[0]);
     await page.waitForSelector('#stream-box');
     assert.equal(await page.evaluate(()=>submissions),1);
@@ -116,7 +116,7 @@ async function run() {
     assert.equal(await page.evaluate(()=>loginVisibleOnSubmit),false);
     console.log('PASS: actual firmware ID-only password markup automatically authenticates');
     for(const invalid of ['',false,{},42]) {
-      await assert.rejects(inventory.evaluate(async({id,endpoint,invalid})=>window.workspace.save({id,name:'Same display name',lan:endpoint,tailnet:''},invalid),{id:ids[0],endpoint,invalid}),/nonempty password/);
+      await assert.rejects(inventory.evaluate(async({id,endpoint,invalid})=>window.workspace.save({id,name:'password-fixture',lan:endpoint,tailnet:''},invalid),{id:ids[0],endpoint,invalid}),/nonempty password/);
     }
     await assert.rejects(inventory.evaluate(async({id,endpoint})=>window.workspace.save({id,name:'',lan:endpoint,tailnet:''},'must-not-save'),{id:ids[0],endpoint}),/device name/);
     const listed=await inventory.evaluate(()=>window.workspace.list());
@@ -256,7 +256,7 @@ async function run() {
     assert.equal(await other.locator('input[name=passwd]').inputValue(),'');
     assert.equal(await other.evaluate(()=>submissions),0);
     assert.equal(await other.evaluate(()=>typeof window.workspace),'undefined');
-    console.log('PASS: identically named devices do not share passwords or expose credential IPC');
+    console.log('PASS: separate devices do not share passwords or expose credential IPC');
     await other.close();
     page=await open(ids[0]);await page.waitForSelector('#stream-box');
     if(!realKeychain) {

@@ -13,6 +13,7 @@
     "test:windows": "node scripts/validate-windows.cjs",
     "test:inventory": "node scripts/validate-inventory.cjs",
     "test:passwords": "node scripts/validate-passwords.cjs",
+    "test:api": "node scripts/validate-api.cjs",
     "test:live": "node scripts/validate-live.cjs"
   },
   "devDependencies": {

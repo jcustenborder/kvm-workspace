@@ -70,7 +70,7 @@ async function run() {
     const windows=[];
     for(let index=0;index<3;index++) {
       const next=electron.waitForEvent('window');
-      await inventory.evaluate(async ({id,url})=>{await window.workspace.save({id,name:`Fixture ${id}`,lan:url,tailnet:''});await window.workspace.open(id,'lan');},{id:String(index),url:endpoint});
+      await inventory.evaluate(async ({id,url})=>{await window.workspace.save({id,name:`fixture-${id}`,lan:url,tailnet:''});await window.workspace.open(id,'lan');},{id:String(index),url:endpoint});
       const page=await next;
       await page.waitForURL(endpoint+'/');
       await page.locator('#stream-box').waitFor();
@@ -93,7 +93,7 @@ async function run() {
     }
     assert(savedOn,'Explicit output enable must persist to the owning KVM');
     const rejected=await electron.evaluate(async ({ipcMain,BrowserWindow})=>{
-      const session=BrowserWindow.getAllWindows().find(win=>win.getTitle().startsWith('Fixture 0')).webContents;
+      const session=BrowserWindow.getAllWindows().find(win=>win.getTitle().startsWith('fixture-0')).webContents;
       const inventory=BrowserWindow.getAllWindows().find(win=>win.webContents.getURL().startsWith('file:')).webContents;
       const read=ipcMain._invokeHandlers.get('session:sound-output:get');
       const write=ipcMain._invokeHandlers.get('session:sound-output:set');
@@ -112,14 +112,14 @@ async function run() {
     await windows[0].evaluate(()=>{const frame=document.createElement('iframe');frame.src='/frame';document.body.append(frame);});
     await windows[0].frameLocator('iframe').locator('#stream-box').waitFor();
     assert.equal(await electron.evaluate(async ({ipcMain,BrowserWindow})=>{
-      const sender=BrowserWindow.getAllWindows().find(win=>win.getTitle().startsWith('Fixture 0')).webContents;
+      const sender=BrowserWindow.getAllWindows().find(win=>win.getTitle().startsWith('fixture-0')).webContents;
       try {await ipcMain._invokeHandlers.get('session:sound-output:get')({sender,senderFrame:sender.mainFrame.frames[0]});return false;} catch {return true;}
     }),true,'Same-origin subframes must not read session preferences');
     const specialWindow=electron.waitForEvent('window');
-    await inventory.evaluate(async url=>{await window.workspace.save({id:'toString',name:'Special identity',lan:url,tailnet:''});await window.workspace.open('toString','lan');},endpoint);
+    await inventory.evaluate(async url=>{await window.workspace.save({id:'toString',name:'special-identity',lan:url,tailnet:''});await window.workspace.open('toString','lan');},endpoint);
     const special=await specialWindow;await special.waitForURL(endpoint+'/');
     assert.equal(await electron.evaluate(({ipcMain,BrowserWindow})=>{
-      const sender=BrowserWindow.getAllWindows().find(win=>win.getTitle().startsWith('Special identity')).webContents;
+      const sender=BrowserWindow.getAllWindows().find(win=>win.getTitle().startsWith('special-identity')).webContents;
       return ipcMain._invokeHandlers.get('session:sound-output:get')({sender,senderFrame:sender.mainFrame});
     }),null,'A device without a saved choice must not inherit object prototype values');
     await special.close();await inventory.evaluate(()=>window.workspace.remove('toString'));
@@ -199,16 +199,16 @@ async function run() {
     await windows[0].evaluate(async url=>{try{await fetch(url,{mode:'no-cors'});}catch{}},otherEndpoint);
     assert.equal(crossPortRequests,0);
     report.checks.push('selected certificate trust cannot authorize another port');
-    await inventory.evaluate(async ({lan,tailnet})=>window.workspace.save({id:'0',name:'Fixture 0',lan,tailnet}),{lan:endpoint,tailnet:otherEndpoint});
+    await inventory.evaluate(async ({lan,tailnet})=>window.workspace.save({id:'0',name:'fixture-0',lan,tailnet}),{lan:endpoint,tailnet:otherEndpoint});
     await assert.rejects(inventory.evaluate(()=>window.workspace.open('0','tailnet')),/another route/);
     report.checks.push('different route cannot falsely report success for an existing LAN window');
     assert.equal(JSON.parse(await readFile(savedPath,'utf8')).soundOutputs['0'],true,'Inventory edit must preserve sound preference');
     await rename(savedPath,savedPath+'.original');await mkdir(savedPath);
-    await assert.rejects(inventory.evaluate(url=>window.workspace.save({id:'0',name:'Rejected edit',lan:url,tailnet:''}),endpoint));
-    assert.equal((await inventory.evaluate(()=>window.workspace.list())).devices.find(item=>item.id==='0').name,'Fixture 0');
+    await assert.rejects(inventory.evaluate(url=>window.workspace.save({id:'0',name:'rejected-edit',lan:url,tailnet:''}),endpoint));
+    assert.equal((await inventory.evaluate(()=>window.workspace.list())).devices.find(item=>item.id==='0').name,'fixture-0');
     await rm(savedPath,{recursive:true});await rename(savedPath+'.original',savedPath);
-    await inventory.evaluate(url=>window.workspace.save({id:'2',name:'Fixture 2',lan:url,tailnet:''}),endpoint);
-    assert.equal(JSON.parse(await readFile(savedPath,'utf8')).devices.find(item=>item.id==='0').name,'Fixture 0');
+    await inventory.evaluate(url=>window.workspace.save({id:'2',name:'fixture-2',lan:url,tailnet:''}),endpoint);
+    assert.equal(JSON.parse(await readFile(savedPath,'utf8')).devices.find(item=>item.id==='0').name,'fixture-0');
     report.checks.push('failed atomic inventory writes do not publish or leak into later saves');
     if(!ci) {
       await windows[1].evaluate(()=>localStorage.setItem('gl-kvm-token-key','fixture-token-not-a-real-login'));
@@ -242,7 +242,7 @@ async function run() {
     assert.equal(await windows[2].evaluate(()=>events.some(event=>event.type==='keydown'&&event.key==='ShiftLeft')),false);
     report.checks.push('held modifier released on focus change without broadcasting input');
     const loadIds=await Promise.all(windows.map(page=>page.evaluate(()=>loadId)));
-    await electron.evaluate(({BrowserWindow})=>{const target=BrowserWindow.getAllWindows().find(win=>win.getTitle().startsWith('Fixture 1'));target.setSize(800,600);});
+    await electron.evaluate(({BrowserWindow})=>{const target=BrowserWindow.getAllWindows().find(win=>win.getTitle().startsWith('fixture-1'));target.setSize(800,600);});
     assert.equal(await windows[1].evaluate(()=>loadId),loadIds[1]);
     await windows[1].reload();
     assert.notEqual(await windows[1].evaluate(()=>loadId),loadIds[1]);

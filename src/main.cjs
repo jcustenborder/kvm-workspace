@@ -1,13 +1,17 @@
 'use strict';
-const {app,BrowserWindow,Menu,dialog,ipcMain,session,shell,safeStorage,systemPreferences} = require('electron');
+const {app,BrowserWindow,Menu,dialog,ipcMain,session,shell,safeStorage,systemPreferences,clipboard} = require('electron');
 const {readFile,writeFile,mkdir,rename,unlink} = require('node:fs/promises');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const {randomUUID,X509Certificate} = require('node:crypto');
-const {validateInventory,updateDevices,sameOrigin,certificateMatches} = require('./model.cjs');
+const {validateInventory,updateDevices,sameOrigin,certificateMatches,validDeviceName} = require('./model.cjs');
 const {serial} = require('./serial.cjs');
 const {createUpdates,updatesEnabled} = require('./updates.cjs');
 const passwords = require('./passwords.cjs');
+const {createApi,loadApiToken,apiError}=require('./api.cjs');
+const {sessionAction}=require('./session-actions.cjs');
+const {runSessionAction,endSession}=require('./session-control.cjs');
+const {keys:apiKeys}=require('./keys.cjs');
 
 app.setName('KVM Workspace');
 const ownsInstance=app.requestSingleInstanceLock();
@@ -21,7 +25,7 @@ const inventoryURL = pathToFileURL(path.join(__dirname,'index.html')).href;
 let inventory = null;
 /** @type {{devices:Array<{id:string,name:string,lan:string,tailnet:string}>,pins:Record<string,string>,soundOutputs?:Record<string,boolean>}} */
 let data = {devices:[],pins:{}};
-/** @type {Map<string,{id:string,deviceId:string,name:string,endpoint:string,window:Electron.BrowserWindow,session:Electron.Session,generation:number,loginReady:Promise<void>}>} */
+/** @type {Map<string,{id:string,deviceId:string,name:string,endpoint:string,route:string,window:Electron.BrowserWindow,session:Electron.Session,generation:number,loginReady:Promise<void>}>} */
 const sessions = new Map();
 /** @type {Map<string,Promise<void>>} */
 const cleanupTasks = new Map();
@@ -43,7 +47,16 @@ async function updateData(mutate) {
     changed();
   });
 }
-function changed() { inventory?.webContents.send('inventory:changed'); }
+function changed() {
+  for(const item of sessions.values()) {
+    const device=data.devices.find(device=>device.id===item.deviceId);
+    if(device && device.name!==item.name && !item.window.isDestroyed()) {
+      item.name=device.name;
+      item.window.setTitle(`${device.name} — ${new URL(item.endpoint).host}`);
+    }
+  }
+  inventory?.webContents.send('inventory:changed');
+}
 /** @param {unknown} error */
 function report(error) {
   console.error('[workspace] operation failed:', error instanceof Error ? error.message : 'Unknown error');
@@ -124,9 +137,9 @@ async function openSession(device,endpoint) {
     backgroundColor:'#101217',tabbingIdentifier:id,
     webPreferences:{session:isolated,contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false,
       autoplayPolicy:'no-user-gesture-required',preload:path.join(__dirname,'session-preload.cjs'),
-      additionalArguments:[`--workspace-media=${Buffer.from(mediaControl).toString('base64')}`]}});
+      additionalArguments:[`--workspace-media=${Buffer.from(mediaControl).toString('base64')}`,`--workspace-actions=${Buffer.from(sessionAction.toString()).toString('base64')}`]}});
   const loginRestore=Promise.withResolvers();
-  const item = {id,deviceId:device.id,name:device.name,endpoint,window:win,session:isolated,generation:0,loginReady:loginRestore.promise};
+  const item = {id,deviceId:device.id,name:device.name,endpoint,route:device.lan===endpoint?'lan':'tailnet',window:win,session:isolated,generation:0,loginReady:loginRestore.promise};
   /** @type {Set<Electron.BrowserWindow>} */
   const auxiliary = new Set();
   sessions.set(id,item);
@@ -189,6 +202,7 @@ async function openSession(device,endpoint) {
   win.on('blur',() => { win.webContents.send('session:release-input'); });
   win.on('close',() => { win.webContents.send('session:release-input'); for (const child of auxiliary) child.destroy(); });
   win.on('closed',() => {
+    for(const child of auxiliary) if(!child.isDestroyed()) child.destroy();
     grants.clear(); sessions.delete(id); changed();
     isolated.removeListener('will-download',onDownload);
     const cleanup = isolated.closeAllConnections().then(() => isolated.clearStorageData());
@@ -200,7 +214,12 @@ async function openSession(device,endpoint) {
     download.once('done',(_e,state) => { if (state !== 'completed') report(new Error(`Download ${state}.`)); });
   };
   isolated.on('will-download',onDownload);
-  await win.loadURL(endpoint).catch((error) => { if (error.code !== 'ERR_ABORTED') report(new Error(`Unable to load ${device.name}: ${error.code || error.message}`)); });
+  try {await win.loadURL(endpoint);}
+  catch(error) {
+    loginRestore.resolve();
+    if(!win.isDestroyed()) win.close();
+    throw new Error(`Unable to load ${device.name}: ${error.code || error.message}`);
+  }
   let restoreStage='reading encrypted file';
   try {
     const saved = await readFile(path.join(app.getPath('userData'),`login-${device.id}.encrypted`));
@@ -339,26 +358,95 @@ ipcMain.handle('inventory:remove',async (event,id) => {
 });
 ipcMain.handle('inventory:open',async (event,id,route) => {
   requireInventory(event);
+  await startSession(id,route);
+});
+/** @param {string} id @param {'lan'|'tailnet'} route */
+async function startSession(id,route) {
   if (pendingRemovals.has(id)) throw new Error('This device is being removed.');
   if (!['lan','tailnet'].includes(route)) throw new Error('Choose LAN or Tailnet.');
   const device = data.devices.find((item) => item.id === id);
   if (!device || !device[route]) throw new Error('No saved address for this route.');
   if (pendingOpens.has(id)) throw new Error('This device is already opening.');
   pendingOpens.add(id);
-  try { await openSession(device,device[route]); }
+  try {
+    await openSession(device,device[route]);
+    const item=[...sessions.values()].find(item=>item.deviceId===id);
+    if(item) item.route=route;
+  }
   finally { pendingOpens.delete(id); }
-});
+}
 ipcMain.handle('inventory:focus',(event,id) => { requireInventory(event); const item=sessions.get(id); if(!item) throw new Error('This window has already closed.'); item.window.show(); item.window.focus(); });
+
+/** @param {{id:string,name:string}} device @returns {Promise<object>} */
+async function sessionInfo(device) {
+  const item=[...sessions.values()].find(item=>item.deviceId===device.id&&!item.window.isDestroyed());
+  let enabled=null;
+  if(item && sameOrigin(item.window.webContents.getURL(),item.endpoint)) {
+    try {enabled=(await runSessionAction(item,'read')).enabled;}
+    catch(error) {if(error.status!==409) throw error;}
+  }
+  return {name:device.name,state:item?'open':'closed',route:item?item.route:null,speaker:{enabled}};
+}
+
+/** @param {string} name @param {string} action @param {Record<string,unknown>} body @returns {Promise<object>} */
+async function apiCommand(name,action,body) {
+  const matches=data.devices.filter(device=>device.name===name);
+  if(matches.length>1) throw apiError(409,'Duplicate name; rename this device in the desktop editor.');
+  if(!matches.length) throw apiError(404,'Device not found.');
+  const id=matches[0].id;
+  if(!validDeviceName(name)) throw apiError(409,'Rename this device in the desktop editor.');
+  return serial(`api:${id}`,async()=>{
+    const device=data.devices.find(current=>current.id===id&&current.name===name);
+    if(!device) throw apiError(409,'Device was renamed or removed.');
+    const item=[...sessions.values()].find(item=>item.deviceId===device.id&&!item.window.isDestroyed());
+    if(pendingOpens.has(device.id)||pendingRemovals.has(device.id)) throw apiError(409,'Device is opening or being removed.');
+    if(action==='start') {
+      if(item && item.route!==body.route) throw apiError(409,'Close the current session before changing routes.');
+      if(!item) {
+        if(!device[body.route]) throw apiError(409,'No saved address for this route.');
+        await startSession(device.id,body.route);
+      }
+    } else if(action==='end') {
+      if(item) await endSession(item);
+    } else {
+      if(!item) throw apiError(409,'Session is closed.');
+      if(action==='focus') {if(item.window.isMinimized()) item.window.restore();item.window.show();item.window.focus();}
+      else if(action==='send-keys') {
+        await runSessionAction(item,action,{keys:body.keys.map(code=>({code,key:apiKeys[code][0],keyCode:apiKeys[code][1]}))});
+      } else {
+        const generation=item.generation;
+        const result=await runSessionAction(item,action,body);
+        if(typeof result.enabled!=='boolean') throw apiError(409,'KVM speaker state is unavailable.');
+        await updateData(current=>{
+          if(item.window.isDestroyed()||item.generation!==generation||!current.devices.some(device=>device.id===item.deviceId)) throw apiError(409,'Session closed or changed during the operation.');
+          return {...current,soundOutputs:{...current.soundOutputs,[device.id]:result.enabled}};
+        });
+        return {enabled:result.enabled};
+      }
+    }
+    return sessionInfo(data.devices.find(current=>current.id===device.id)||device);
+  });
+}
 
 app.whenReady().then(async () => {
   if (!ownsInstance) return;
   try {
     data = validateInventory(JSON.parse(await readFile(dataPath(),'utf8')));
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  let apiToken,apiServer;
+  try {
+    apiToken=await loadApiToken(app.getPath('userData'));
+    apiServer=createApi({token:apiToken,list:()=>Promise.all(data.devices.map(sessionInfo)),command:apiCommand});
+    await new Promise((resolve,reject)=>{apiServer.once('error',reject);apiServer.listen(53241,'127.0.0.1',resolve);});
+    apiServer.on('error',error=>report(new Error(`Local API failed: ${error.message}`)));
+    app.once('will-quit',()=>{apiServer.closeAllConnections();apiServer.close();});
+    console.info('[workspace] Local API listening on 127.0.0.1:53241');
+  } catch(error) {report(new Error(`Local API could not start: ${error.message}`));}
   const canUpdate=updatesEnabled(app,process.platform,process.arch,process.resourcesPath);
   let updates;
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     {label:app.name,submenu:[{role:'about'},{id:'updates',label:'Check for Updates…',enabled:canUpdate,click:()=>{void updates?.check(true);}},
+      {label:'Copy API Token',enabled:!!apiToken,click:()=>clipboard.writeText(apiToken)},
       {type:'separator'},{role:'services'},{type:'separator'},{role:'hide'},{role:'hideOthers'},{role:'unhide'},{type:'separator'},{role:'quit'}]},
     {label:'File',submenu:[{label:'Device Inventory',accelerator:'CommandOrControl+Shift+D',click:showInventory},{role:'close'}]},
     {label:'Edit',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},

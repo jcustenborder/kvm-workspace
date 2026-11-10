@@ -52,7 +52,7 @@ The build output is also runnable:
 open "build/KVM Workspace-darwin-arm64/KVM Workspace.app"
 ```
 
-1. Choose **Add KVM**. Save a friendly name and a LAN address, tailnet address,
+1. Choose **Add KVM**. Save a unique name and a LAN address, tailnet address,
    or both. Optionally enter the administrator password for automatic sign-in.
    HTTPS IP addresses, IPv6 addresses and MagicDNS names are supported.
 2. Choose **Open LAN** or **Open Tailnet**. Each device opens in its own window.
@@ -114,7 +114,7 @@ For automatic authentication even after login tokens expire:
 
 Passwords belong to the saved device's stable internal ID, so its LAN and
 Tailscale addresses share one password and renaming the entry preserves it.
-Separate entries remain separate even when their names match. Each route still
+Separate entries retain independent credentials. Each route still
 requires normal HTTPS certificate verification. Passwords are filled only in the
 device's administrator login form, never in remote-host or password-change fields.
 Firmware changes that alter the recognized form may require manual login.
@@ -144,6 +144,89 @@ Named devices and certificate fingerprints live in the application's own
 `login-<device-id>.encrypted` files. Device pages use in-memory, per-device
 browser partitions; window closure clears their browser storage and connections.
 
+### Local REST API
+
+While the app is running, its API listens on **`http://127.0.0.1:53241`**
+(`http://localhost:53241` also works with IPv4). All endpoints require
+`Authorization: Bearer <token>`, including the **OpenAPI 3.1 document** at
+`GET /openapi.json`. Choose **KVM Workspace → Copy API Token** to obtain the token.
+It is generated once and stored with owner-only permissions in
+`~/Library/Application Support/KVM Workspace/api-token`. To rotate it, quit the app,
+remove that file, restart, and update your clients. A malformed or non-private token
+file produces an explicit startup error. A port conflict disables the API for that
+launch and reports an error; the desktop app remains usable. Browser Origin
+requests are rejected; the API does not enable CORS.
+
+Device names universally follow Kubernetes-style DNS-label rules: **1–63 lowercase
+letters, digits or hyphens**, starting and ending with a letter or digit, unique
+across saved devices. Use names such as `jeremy-laptop-x`. Existing invalid or
+duplicate names still load and appear in lists; rename them using **Devices → Edit**
+before targeting them through the API. Renaming preserves credentials and
+preferences but changes the API URL immediately, including for open windows.
+
+| Method | Path | Request / behavior |
+| --- | --- | --- |
+| GET | `/sessions` | List all saved devices, including closed sessions |
+| GET | `/sessions?state=open` | List only open sessions |
+| GET | `/sessions/{name}` | Get one session and live speaker state |
+| POST | `/sessions/{name}/start` | Required `{"route":"lan"}` or `{"route":"tailnet"}` |
+| POST | `/sessions/{name}/end` | Release input and close; already closed succeeds |
+| POST | `/sessions/{name}/focus` | Show, restore and focus an open window |
+| POST | `/sessions/{name}/send-keys` | `{"keys":["MetaLeft","KeyD"]}` for Windows+D |
+| PUT | `/sessions/{name}/speaker` | `{"enabled":false}` to disable playback |
+| POST | `/sessions/{name}/speaker/toggle` | Toggle and return the confirmed resulting state |
+| GET | `/openapi.json` | Full schemas, supported key codes, authentication and errors |
+
+After copying the token from the menu:
+
+```sh
+TOKEN="$(pbpaste)"
+curl --fail-with-body -H "Authorization: Bearer $TOKEN" http://127.0.0.1:53241/sessions
+curl --fail-with-body -H "Authorization: Bearer $TOKEN" http://127.0.0.1:53241/openapi.json
+curl --fail-with-body -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"route":"lan"}' \
+  http://127.0.0.1:53241/sessions/jeremy-laptop-x/start
+curl --fail-with-body -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"keys":["MetaLeft","KeyD"]}' \
+  http://127.0.0.1:53241/sessions/jeremy-laptop-x/send-keys
+curl --fail-with-body -X POST -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:53241/sessions/jeremy-laptop-x/speaker/toggle
+unset TOKEN
+```
+
+Session responses (or array entries for lists) look like:
+
+```json
+{"name":"jeremy-laptop-x","state":"open","route":"lan","speaker":{"enabled":true}}
+```
+
+`state` means a session window exists, not that firmware has authenticated or the
+remote computer is connected. Closed sessions have `route: null`. Speaker state
+is observed from firmware, including manual changes; `enabled: null` means closed,
+Direct mode, or unavailable controls. Both speaker mutations return
+`{"enabled":true}` or `{"enabled":false}` only after confirmation and persistence.
+Toggle operations run sequentially per device. Speaker control failures leave
+the saved preference intact; persistence failures return an error even if playback
+already changed. Poll session reads to update a client's displayed state.
+Renderer operations have a three-second deadline. After a timeout, state may have
+changed; further commands fail promptly while the old operation is still pending.
+Reconnect or end the session to recover. End always disconnects the window,
+including when firmware attempts to veto closure; if input release cannot be
+confirmed, it closes the window and returns an error rather than claiming success.
+
+Starting uses normal certificate approval and saved login. Certificate approval
+may require a desktop interaction; manual login may still be needed after start.
+Starting an open session on the same route succeeds without stealing focus; a
+different route conflicts. Keys use supported `KeyboardEvent.code` names (listed
+in OpenAPI), press in array order and release in reverse order, without focusing
+the native window. Successful key dispatch is not remote-host acknowledgement.
+
+Errors use `{"error":"description"}`: `400` invalid input, `401` missing/incorrect
+token, `403` rejected Origin/Host, `404` unknown device/path, `405` wrong method,
+`409` closed/unready/conflicting session, `413` body over 16 KiB, `415` non-JSON
+body, or `500` internal/persistence failure. Session-control checks use synthetic
+firmware; real remote Windows shortcut delivery still requires hardware validation.
+
 ## Build from source
 
 Requires macOS, Node.js >=22.12, npm, and network access for the pinned Electron
@@ -164,6 +247,7 @@ published DMGs use the signed release process described below.
 npm run test:inventory
 npm run test:windows
 npm run test:passwords
+npm run test:api
 ```
 
 For a focused native Window-menu check:

@@ -12,8 +12,8 @@ test('saved LAN, MagicDNS and IPv6 endpoints normalize without accepting credent
 });
 
 test('device records preserve names/routes but cannot retain plaintext credential fields', () => {
-  const device = validateDevice({ name: ' Office ', lan: '10.0.1.145', tailnet: 'office-kvm', id: 'a' });
-  assert.deepEqual(device, {id:'a',name:'Office',lan:'https://10.0.1.145',tailnet:'https://office-kvm'});
+  const device = validateDevice({ name: 'office', lan: '10.0.1.145', tailnet: 'office-kvm', id: 'a' });
+  assert.deepEqual(device, {id:'a',name:'office',lan:'https://10.0.1.145',tailnet:'https://office-kvm'});
   assert.throws(() => validateDevice({...device,password:'secret'}), /Unexpected/);
   assert.throws(() => validateDevice({id:'b',name:'empty'}), /address/);
   assert.throws(() => validateDevice({name:'',lan:'host'}), /name/);
@@ -21,10 +21,10 @@ test('device records preserve names/routes but cannot retain plaintext credentia
 
 test('editing one device leaves every other record intact and does not impose a device limit', () => {
   let devices = [];
-  for (let index = 0; index < 12; index++) devices = updateDevices(devices, {id:String(index),name:`KVM ${index}`,lan:`kvm-${index}`});
-  devices = updateDevices(devices, {id:'3',name:'Changed',tailnet:'changed-kvm'});
+  for (let index = 0; index < 12; index++) devices = updateDevices(devices, {id:String(index),name:`kvm-${index}`,lan:`kvm-${index}`});
+  devices = updateDevices(devices, {id:'3',name:'changed',tailnet:'changed-kvm'});
   assert.equal(devices.length, 12);
-  assert.equal(devices[3].name, 'Changed');
+  assert.equal(devices[3].name, 'changed');
   assert.equal(devices[2].lan, 'https://kvm-2');
   assert.equal(devices[3].lan, '');
 });
@@ -57,8 +57,21 @@ test('sound output choices survive inventory round trips and edits, with strict 
   const devices=[{id:'a',name:'A',lan:'https://a',tailnet:''},{id:'b',name:'B',lan:'https://b',tailnet:''}];
   const saved={devices,pins:{},soundOutputs:{a:true,b:false}};
   assert.deepEqual(validateInventory(JSON.parse(JSON.stringify(saved))),saved);
-  assert.deepEqual(validateInventory({...saved,devices:updateDevices(devices,{...devices[0],name:'Renamed'})}).soundOutputs,{a:true,b:false});
+  assert.deepEqual(validateInventory({...saved,devices:updateDevices(devices,{...devices[0],name:'renamed'})}).soundOutputs,{a:true,b:false});
   for(const soundOutputs of [null,[],true,{a:'true'},{a:1},{a:null},{missing:true}]) {
     assert.throws(()=>validateInventory({...saved,soundOutputs}),/sound output/i);
   }
+});
+
+test('all device saves require unique DNS-label names; legacy inventories remain repairable', () => {
+  const device={id:'a',name:'laptop-1',lan:'host'};
+  for(const name of ['Office','office mac',' office','office ','-office','office-','a.b','a_b','a'.repeat(64),'']) {
+    assert.throws(()=>validateDevice({...device,name}),/name/i);
+  }
+  for(const name of ['a','0','a'.repeat(63),'jeremy-laptop-x']) assert.equal(validateDevice({...device,name}).name,name);
+  assert.throws(()=>updateDevices([device],{...device,id:'b'}),/unique/i);
+  assert.equal(updateDevices([device],device).length,1);
+  const legacy=validateInventory({devices:[{...device,name:'Office Mac'},{...device,id:'b',name:'Office Mac'}],pins:{},soundOutputs:{a:true}});
+  assert.equal(legacy.devices[0].name,'Office Mac');
+  assert.equal(updateDevices(legacy.devices,{...device,name:'office-mac'})[0].id,'a');
 });

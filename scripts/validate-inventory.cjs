@@ -35,25 +35,29 @@ async function run() {
     assert.equal(await page.locator('#device-name').inputValue(),'');
     await page.locator('#device-name').fill('Inventory UI regression');
     await page.locator('#device-lan').fill('kvm-inventory-test.invalid');
+    await page.locator('#save-device').click();
+    await page.locator('#device-error').filter({hasText:'lowercase'}).waitFor();
+    await page.locator('#device-name').fill('inventory-ui-regression');
+    await page.locator('#device-lan').fill('kvm-inventory-test.invalid');
     await page.locator('#device-tailnet').fill('kvm-tailnet-test.invalid');
     await page.locator('#save-device').click();
     await page.locator('#device-dialog').waitFor({state:'hidden'});
-    await page.locator('.device-name').filter({hasText:'Inventory UI regression'}).waitFor();
+    await page.locator('.device-name').filter({hasText:'inventory-ui-regression'}).waitFor();
     assert.equal(await page.locator('[data-address="lan"]').innerText(),'https://kvm-inventory-test.invalid');
     assert.equal(await page.locator('[data-address="tailnet"]').innerText(),'https://kvm-tailnet-test.invalid');
 
     await page.locator('[data-action="edit"]').click();
-    assert.equal(await page.locator('#device-name').inputValue(),'Inventory UI regression');
-    await page.locator('#device-name').fill('Updated inventory device');
+    assert.equal(await page.locator('#device-name').inputValue(),'inventory-ui-regression');
+    await page.locator('#device-name').fill('updated-inventory-device');
     await page.locator('#save-device').click();
     await page.locator('#device-dialog').waitFor({state:'hidden'});
-    await page.locator('.device-name').filter({hasText:'Updated inventory device'}).waitFor();
+    await page.locator('.device-name').filter({hasText:'updated-inventory-device'}).waitFor();
 
     await application.close();application=undefined;
     application=await _electron.launch({executablePath,args:[`--user-data-dir=${profile}`]});
     page=await application.firstWindow();
     page.on('pageerror',error=>pageErrors.push(error.message));
-    await page.locator('.device-name').filter({hasText:'Updated inventory device'}).waitFor();
+    await page.locator('.device-name').filter({hasText:'updated-inventory-device'}).waitFor();
     await page.locator('#add-device').click();
     await page.locator('#device-dialog').waitFor({state:'visible'});
     await page.locator('#cancel-device').click();

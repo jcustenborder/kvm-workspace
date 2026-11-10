@@ -1,6 +1,8 @@
 'use strict';
 // Sandboxed, isolated preload. No native API or IPC capability is exposed to the device.
 const {ipcRenderer,contextBridge} = require('electron');
+const actionsArgument=process.argv.find(argument=>argument.startsWith('--workspace-actions='));
+const runSessionAction=actionsArgument?new Function(`return (${new TextDecoder().decode(Uint8Array.from(atob(actionsArgument.slice('--workspace-actions='.length)),character=>character.charCodeAt(0)))})`)():null;
 const mediaArgument=process.argv.find(argument=>argument.startsWith('--workspace-media='));
 if (mediaArgument) {
   const source=new TextDecoder().decode(Uint8Array.from(atob(mediaArgument.slice('--workspace-media='.length)),character=>character.charCodeAt(0)));
@@ -31,6 +33,8 @@ function releaseInput() {
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   if (document.pointerLockElement) document.exitPointerLock();
 }
+// These properties exist only in the isolated world, never in device scripts.
+window.__workspaceReleaseInput=releaseInput;
 ipcRenderer.on('session:release-input',releaseInput);
 window.addEventListener('blur',releaseInput);
 window.addEventListener('pagehide',releaseInput);
@@ -40,10 +44,22 @@ window.addEventListener('pagehide',releaseInput);
 window.addEventListener('DOMContentLoaded',async () => {
   /** @type {boolean | null} */
   let desired=null;
-  let loaded=false, applied=false, userChoice=false, stopped=false, wasDirect=false;
+  let loaded=false, applied=false, userChoice=false, stopped=false, wasDirect=false, apiChanging=false;
   let deadline=0;
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let timeout;
+  /** @param {string} action @param {object} payload */
+  window.__workspaceSessionAction=async(action,payload)=>{
+    if(!runSessionAction) throw new Error('Session actions are unavailable.');
+    if(action==='send-keys') releaseInput();
+    const changing=action==='speaker'||action==='speaker/toggle';
+    if(changing) apiChanging=true;
+    try {
+      const result=await runSessionAction(action,payload);
+      if(changing) {desired=result.enabled;loaded=true;userChoice=true;applied=true;clearTimeout(timeout);}
+      return result;
+    } finally {if(changing) apiChanging=false;}
+  };
   /** @param {string} message */
   function warn(message) {
     console.error('[workspace] sound output:',message);
@@ -59,7 +75,7 @@ window.addEventListener('DOMContentLoaded',async () => {
     return href==='#gl-kvm-sound-full'?true:href==='#gl-kvm-sound-off'?false:null;
   }
   function restore() {
-    if (stopped || !loaded) return;
+    if (stopped || !loaded || apiChanging) return;
     const stream=document.querySelector('#stream-window');
     if (stream?.classList.contains('is-direct')) {wasDirect=true;applied=false;deadline=0;return;}
     if (wasDirect) {wasDirect=false;applied=false;}
@@ -71,7 +87,7 @@ window.addEventListener('DOMContentLoaded',async () => {
       if (state!==desired) {
         control.dispatchEvent(new MouseEvent('click',{bubbles:true}));
         timeout=setTimeout(()=>{
-          if (!stopped && !document.querySelector('#stream-window.is-direct') && outputState(document.querySelector('.volume-icon'))!==desired) warn('Sound output could not be restored. Use the KVM speaker control to reconnect it.');
+          if (!stopped && !apiChanging && !document.querySelector('#stream-window.is-direct') && outputState(document.querySelector('.volume-icon'))!==desired) warn('Sound output could not be restored. Use the KVM speaker control to reconnect it.');
         },1000);
       }
       return;
