@@ -401,12 +401,12 @@ ipcMain.handle('inventory:focus',(event,id) => { requireInventory(event); const 
 /** @param {{id:string,name:string}} device @returns {Promise<object>} */
 async function sessionInfo(device) {
   const item=[...sessions.values()].find(item=>item.deviceId===device.id&&!item.window.isDestroyed());
-  let enabled=null;
+  let enabled=null,mouseJiggleEnabled=null;
   if(item && sameOrigin(item.window.webContents.getURL(),item.endpoint)) {
-    try {enabled=(await runSessionAction(item,'read')).enabled;}
+    try {const state=await runSessionAction(item,'read');enabled=state.enabled;mouseJiggleEnabled=state.mouseJiggleEnabled;}
     catch(error) {if(error.status!==409) throw error;}
   }
-  return {name:device.name,state:item?'open':'closed',route:item?item.route:null,speaker:{enabled}};
+  return {name:device.name,state:item?'open':'closed',route:item?item.route:null,speaker:{enabled},mouseJiggle:{enabled:mouseJiggleEnabled}};
 }
 
 /** @param {string} name @param {string} action @param {Record<string,unknown>} body @returns {Promise<object>} */
@@ -434,7 +434,7 @@ async function apiCommand(name,action,body) {
       if(action==='focus') {if(item.window.isMinimized()) item.window.restore();item.window.show();item.window.focus();}
       else if(action==='send-keys') {
         await runSessionAction(item,action,{keys:body.keys.map(code=>({code,key:apiKeys[code][0],keyCode:apiKeys[code][1]}))});
-      } else {
+      } else if(action==='speaker'||action==='speaker/toggle') {
         const generation=item.generation;
         const result=await runSessionAction(item,action,body);
         if(typeof result.enabled!=='boolean') throw apiError(409,'KVM speaker state is unavailable.');
@@ -443,6 +443,16 @@ async function apiCommand(name,action,body) {
           return {...current,soundOutputs:{...current.soundOutputs,[device.id]:result.enabled}};
         });
         return {enabled:result.enabled};
+      } else if(action==='mouse-jiggle/toggle') {
+        const result=await runSessionAction(item,action,body);
+        if(typeof result.enabled!=='boolean') throw apiError(409,'KVM Mouse Jiggle state is unavailable.');
+        return {enabled:result.enabled};
+      } else if(action==='ocr') {
+        const result=await runSessionAction(item,action,body);
+        if(result.triggered!==true) throw apiError(409,'KVM OCR interface is unavailable.');
+        return {triggered:true};
+      } else {
+        throw apiError(404,'Unknown session action.');
       }
     }
     return sessionInfo(data.devices.find(current=>current.id===device.id)||device);

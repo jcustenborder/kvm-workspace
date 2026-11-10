@@ -30,12 +30,14 @@ test('token is persistent, private and corrupt tokens fail instead of silently r
 
 test('HTTP API exposes public docs, authenticates session routes and validates before dispatch',async t=>{
   const token='a'.repeat(64);
-  const records=[{name:'laptop',state:'open',route:'lan',speaker:{enabled:false}},{name:'desktop',state:'closed',route:null,speaker:{enabled:null}}];
+  const records=[{name:'laptop',state:'open',route:'lan',speaker:{enabled:false},mouseJiggle:{enabled:true}},{name:'desktop',state:'closed',route:null,speaker:{enabled:null},mouseJiggle:{enabled:null}}];
   let commands=0;
   const server=createApi({token,list:async()=>records,command:async(name,action,body)=>{
     commands++;
     if(name==='missing') throw Object.assign(new Error('No device.'),{status:404});
     if(action==='speaker'||action==='speaker/toggle') return {enabled:action==='speaker'?body.enabled:true};
+    if(action==='mouse-jiggle/toggle') return {enabled:false};
+    if(action==='ocr') return {triggered:true};
     return records[0];
   }});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -53,6 +55,8 @@ test('HTTP API exposes public docs, authenticates session routes and validates b
   assert.equal((await call('/sessions','GET',undefined,{authorization:'Bearer wrong'})).status,401);
   assert.equal((await call('/sessions','GET',undefined,{authorization:`Bearer ${'b'.repeat(64)}`})).status,401);
   assert.equal((await call('/sessions/laptop/speaker/toggle','POST',undefined,{authorization:''})).status,401);
+  assert.equal((await call('/sessions/laptop/mouse-jiggle/toggle','POST',undefined,{authorization:''})).status,401);
+  assert.equal((await call('/sessions/laptop/ocr','POST',undefined,{authorization:''})).status,401);
   assert.equal((await call('/sessions','GET',undefined,{origin:'https://evil.example'})).status,403);
   assert.equal(await new Promise((resolve,reject)=>{
     request(base+'/sessions',{headers:{host:'evil.example',authorization:`Bearer ${token}`}},response=>{response.resume();resolve(response.statusCode);}).on('error',reject).end();
@@ -66,6 +70,7 @@ test('HTTP API exposes public docs, authenticates session routes and validates b
     ['/sessions/laptop/start','POST',{route:'lan',extra:true}],['/sessions/laptop/send-keys','POST',{keys:[]}],
     ['/sessions/laptop/send-keys','POST',{keys:['MetaLeft','bogus']}],['/sessions/laptop/send-keys','POST',{keys:['KeyD','KeyD']}],
     ['/sessions/laptop/speaker','PUT',{enabled:'false'}],['/sessions/laptop/end','POST',{extra:1}],
+    ['/sessions/laptop/mouse-jiggle/toggle','POST',{extra:true}],['/sessions/laptop/ocr','POST',{extra:true}],
     ['/sessions?state=bad','GET'],['/sessions?unknown=1','GET'],['/sessions/UPPER','GET'],
   ]) assert.equal((await call(url,method,body)).status,400,`${method} ${url}`);
   assert.equal(commands,0,'invalid bodies must not reach session controls');
@@ -73,6 +78,8 @@ test('HTTP API exposes public docs, authenticates session routes and validates b
   assert.equal((await call('/sessions/laptop/nope','POST',{})).status,404);
   assert.equal((await call('/sessions/laptop/speaker','PUT',{enabled:false})).status,200);
   assert.deepEqual(await (await call('/sessions/laptop/speaker/toggle','POST')).json(),{enabled:true});
+  assert.deepEqual(await (await call('/sessions/laptop/mouse-jiggle/toggle','POST')).json(),{enabled:false});
+  assert.deepEqual(await (await call('/sessions/laptop/ocr','POST')).json(),{triggered:true});
   for(const action of ['start','end','focus','send-keys']) {
     assert.equal((await call(`/sessions/laptop/${action}`,'POST',action==='start'?{route:'lan'}:action==='send-keys'?{keys:['MetaLeft','KeyD']}:undefined)).status,200);
   }
@@ -81,10 +88,16 @@ test('HTTP API exposes public docs, authenticates session routes and validates b
   assert.equal((await call('/sessions/laptop/start','POST',{route:'x'.repeat(17000)})).status,413);
   const document=await (await call('/openapi.json')).json();
   assert.equal(document.openapi,'3.1.0');
+  assert.equal(document.info.version,'1.1.0');
   assert.deepEqual(document.security,[{bearerAuth:[]}]);
   assert.deepEqual(document.paths['/openapi.json'].get.security,[]);
   assert.equal(document.components.securitySchemes.bearerAuth.scheme,'bearer');
-  for(const route of ['start','end','focus','send-keys','speaker/toggle']) assert(document.paths[`/sessions/{name}/${route}`].post.responses['200']);
+  for(const route of ['start','end','focus','send-keys','speaker/toggle','mouse-jiggle/toggle','ocr']) assert(document.paths[`/sessions/{name}/${route}`].post.responses['200']);
+  const sessionSchema=document.paths['/sessions'].get.responses['200'].content['application/json'].schema.items;
+  assert(sessionSchema.required.includes('mouseJiggle'));
+  assert.deepEqual(sessionSchema.properties.mouseJiggle.properties.enabled.type,['boolean','null']);
+  assert.equal(document.paths['/sessions/{name}/mouse-jiggle/toggle'].post.responses['200'].content['application/json'].schema.properties.enabled.type,'boolean');
+  assert.equal(document.paths['/sessions/{name}/ocr'].post.responses['200'].content['application/json'].schema.properties.triggered.const,true);
   assert.equal(document.paths['/sessions/{name}/start'].post.requestBody.required,true);
   assert.deepEqual(document.paths['/sessions/{name}/start'].post.requestBody.content['application/json'].schema.required,['route']);
 });

@@ -100,7 +100,7 @@ function createApi({token,list,command}) {
         if(request.method!=='GET') {response.setHeader('Allow','GET');throw apiError(405,'Use GET.');}
         result=(await list()).filter(item=>!url.search || item.state==='open');
       } else {
-        const match=/^\/sessions\/([^/]+)(?:\/(start|end|focus|send-keys|speaker|speaker\/toggle))?$/.exec(url.pathname);
+        const match=/^\/sessions\/([^/]+)(?:\/(start|end|focus|send-keys|speaker|speaker\/toggle|mouse-jiggle\/toggle|ocr))?$/.exec(url.pathname);
         if(!match) throw apiError(404,'Unknown endpoint.');
         const [,name,action]=match;
         if(!validDeviceName(name)) throw apiError(400,'Rename this device to a DNS-label name in the desktop editor.');

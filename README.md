@@ -183,13 +183,15 @@ preferences but changes the API URL immediately, including for open windows.
 | --- | --- | --- |
 | GET | `/sessions` | List all saved devices, including closed sessions |
 | GET | `/sessions?state=open` | List only open sessions |
-| GET | `/sessions/{name}` | Get one session and live speaker state |
+| GET | `/sessions/{name}` | Get one session and observed firmware control state |
 | POST | `/sessions/{name}/start` | Required `{"route":"lan"}` or `{"route":"tailnet"}` |
 | POST | `/sessions/{name}/end` | Release input and close; already closed succeeds |
 | POST | `/sessions/{name}/focus` | Show, restore and focus an open window |
 | POST | `/sessions/{name}/send-keys` | `{"keys":["MetaLeft","KeyD"]}` for Windows+D |
 | PUT | `/sessions/{name}/speaker` | `{"enabled":false}` to disable playback |
 | POST | `/sessions/{name}/speaker/toggle` | Toggle and return the confirmed resulting state |
+| POST | `/sessions/{name}/mouse-jiggle/toggle` | Toggle Mouse Jiggle once and return the confirmed resulting state |
+| POST | `/sessions/{name}/ocr` | Open the firmware OCR selection interface and return `{"triggered":true}` |
 | GET | `/openapi.json` | Full schemas, supported key codes, authentication and errors |
 | GET | `/docs` | Public interactive Swagger UI; authorize to test session calls |
 
@@ -207,13 +209,17 @@ curl --fail-with-body -X POST -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:53241/sessions/jeremy-laptop-x/send-keys
 curl --fail-with-body -X POST -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:53241/sessions/jeremy-laptop-x/speaker/toggle
+curl --fail-with-body -X POST -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:53241/sessions/jeremy-laptop-x/mouse-jiggle/toggle
+curl --fail-with-body -X POST -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:53241/sessions/jeremy-laptop-x/ocr
 unset TOKEN
 ```
 
 Session responses (or array entries for lists) look like:
 
 ```json
-{"name":"jeremy-laptop-x","state":"open","route":"lan","speaker":{"enabled":true}}
+{"name":"jeremy-laptop-x","state":"open","route":"lan","speaker":{"enabled":true},"mouseJiggle":{"enabled":false}}
 ```
 
 `state` means a session window exists, not that firmware has authenticated or the
@@ -224,6 +230,18 @@ Direct mode, or unavailable controls. Both speaker mutations return
 Toggle operations run sequentially per device. Speaker control failures leave
 the saved preference intact; persistence failures return an error even if playback
 already changed. Poll session reads to update a client's displayed state.
+
+Mouse Jiggle state is also observed from the rendered firmware switch. Its
+`enabled: null` means closed, unready, or unsupported; it never means false.
+The toggle and OCR endpoints require an initialized session page, click the
+firmware control once, and return only after confirming the resulting switch
+state or visible OCR selection canvas. They do not start or focus sessions,
+retry clicks, extract OCR text, or simulate mouse movement. Both controls are
+available in initialized WebRTC and Direct session modes when their firmware UI
+is present. The recognized DOM contract is verified against RM1PE firmware
+`V1.10.1 release2` with the English device UI; other versions or languages fail
+closed with `null` reads or `409` command errors.
+
 Renderer operations have a three-second deadline. After a timeout, state may have
 changed; further commands fail promptly while the old operation is still pending.
 Reconnect or end the session to recover. End always disconnects the window,
