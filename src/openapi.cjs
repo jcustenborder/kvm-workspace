@@ -25,7 +25,7 @@ function operation(summary,schema,named=false) {
   return {summary,...(named?{parameters:[{name:'name',in:'path',required:true,schema:name}]}:{}),responses};
 }
 const paths={
-  '/openapi.json':{get:operation('Read this OpenAPI document',{type:'object'})},
+  '/openapi.json':{get:{...operation('Read this OpenAPI document',{type:'object'}),security:[]}},
   '/sessions':{get:{...operation('List all saved devices and their session state',{type:'array',items:session}),parameters:[{name:'state',in:'query',schema:{type:'string',enum:['open']},description:'Omit to list all devices.'}]}},
   '/sessions/{name}':{get:operation('Read a named session',session,true)},
 };
@@ -36,5 +36,5 @@ for(const [action,schema] of Object.entries(bodies)) {
     requestBody:{required:!!schema.required,content:json(schema)},
   }};
 }
-const document={openapi:'3.1.0',info:{title:'KVM Workspace Local API',version:'1.0.0',description:'Loopback-only API. All calls require the token from the application menu. Start may require desktop certificate approval and manual login; open means a window exists. Commands are serialized per device. No CORS access.'},servers:[{url:'http://127.0.0.1:53241'}],security:[{bearerAuth:[]}],components:{securitySchemes:{bearerAuth:{type:'http',scheme:'bearer'}}},paths};
+const document={openapi:'3.1.0',info:{title:'KVM Workspace Local API',version:'1.0.0',description:'Enable the loopback-only server in Settings. The schema and /docs are public; session calls require the bearer token copied from Settings. Start may require desktop certificate approval and manual login; open means a window exists. Commands are serialized per device. Browser calls are restricted to the documentation origin.'},servers:[{url:'http://127.0.0.1:53241'}],security:[{bearerAuth:[]}],components:{securitySchemes:{bearerAuth:{type:'http',scheme:'bearer'}}},paths};
 module.exports={document,bodies};

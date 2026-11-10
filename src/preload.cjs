@@ -1,6 +1,19 @@
 'use strict';
 const {contextBridge,ipcRenderer} = require('electron');
 contextBridge.exposeInMainWorld('workspace', {
+  apiStatus:()=>ipcRenderer.invoke('settings:status'),
+  /** @param {boolean} enabled */
+  setApiEnabled:enabled=>ipcRenderer.invoke('settings:enabled',enabled),
+  copyApiToken:()=>ipcRenderer.invoke('settings:copy-token'),
+  regenerateApiToken:()=>ipcRenderer.invoke('settings:regenerate-token'),
+  /** @param {'docs'|'openapi.json'} page */
+  openApiDocs:page=>ipcRenderer.invoke('settings:docs',page),
+  /** @param {()=>void} callback */
+  onSettings:callback=>{
+    const listener=()=>callback();
+    ipcRenderer.on('settings:show',listener);
+    return ()=>ipcRenderer.removeListener('settings:show',listener);
+  },
   list: () => ipcRenderer.invoke('inventory:list'),
   /** @param {object} device @param {string | null} [passwordChange] */
   save: (device,passwordChange) => ipcRenderer.invoke('inventory:save',device,passwordChange),

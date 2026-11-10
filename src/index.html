@@ -8,6 +8,7 @@
     <title>KVM Workspace</title>
     <link rel="stylesheet" href="./style.css">
     <script src="./inventory.js" type="module"></script>
+    <script src="./settings.js" type="module"></script>
   </head>
   <body>
     <main class="workspace">
@@ -19,7 +20,10 @@
             <p class="subtitle">Your devices. Independent windows.</p>
           </div>
         </div>
-        <button class="primary" id="add-device" type="button"><span aria-hidden="true">+</span> Add KVM</button>
+        <div>
+          <button id="settings" type="button">Settings…</button>
+          <button class="primary" id="add-device" type="button"><span aria-hidden="true">+</span> Add KVM</button>
+        </div>
       </header>
 
       <p class="notice error" id="app-error" role="alert" hidden></p>
@@ -50,6 +54,37 @@
       </section>
       <footer>Choose a route explicitly. Each session opens in a separate window.</footer>
     </main>
+
+    <dialog id="settings-dialog" aria-labelledby="settings-title">
+      <div class="dialog-heading">
+        <span class="eyebrow">WORKSPACE</span>
+        <h2 id="settings-title">Settings</h2>
+        <p>Control the local API and access token.</p>
+      </div>
+      <fieldset id="settings-fields">
+        <label><input id="api-enabled" type="checkbox" aria-describedby="api-help"> Enable web server</label>
+        <p class="field-help" id="api-help">Off by default. Changes take effect immediately and are remembered.</p>
+        <p id="api-status" role="status">Loading settings…</p>
+        <button id="retry-api" type="button" hidden>Retry enabling</button>
+        <div class="form-field">
+          <h3>Bearer token</h3>
+          <p class="field-help">Session API calls require this token. Regenerating immediately invalidates the previous token.</p>
+          <div>
+            <button id="copy-api-token" type="button">Copy token</button>
+            <button id="regenerate-api-token" type="button">Regenerate token</button>
+          </div>
+        </div>
+        <h3>API documentation</h3>
+        <p class="field-help">Available without authentication while the server is on. Authorize in Swagger UI to test session calls.</p>
+        <div>
+          <button id="open-api-docs" type="button" disabled>Open /docs</button>
+          <button id="open-api-schema" type="button" disabled>Open /openapi.json</button>
+        </div>
+      </fieldset>
+      <p id="settings-feedback" role="status" aria-live="polite"></p>
+      <p class="notice error" id="settings-error" role="alert" tabindex="-1" hidden></p>
+      <div class="dialog-actions"><button id="close-settings" type="button">Close</button></div>
+    </dialog>
 
     <dialog id="device-dialog" aria-labelledby="device-dialog-title" aria-describedby="device-dialog-help">
       <form id="device-form" novalidate>
