@@ -56,12 +56,13 @@
         <div class="dialog-heading">
           <span class="eyebrow">DEVICE DETAILS</span>
           <h2 id="device-dialog-title">Add KVM</h2>
-          <p id="device-dialog-help">Save a friendly name and at least one address.</p>
+          <p id="device-dialog-help">Save a unique device name and at least one address.</p>
         </div>
         <fieldset id="device-fields">
           <div class="form-field">
             <label for="device-name">Device name</label>
-            <input id="device-name" name="name" type="text" placeholder="Office Mac" autocomplete="off" required>
+            <input id="device-name" name="name" type="text" placeholder="office-mac" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="63" aria-describedby="name-help" required>
+            <p class="field-help" id="name-help">Unique name: 1–63 lowercase letters, digits or hyphens; start and end with a letter or digit.</p>
           </div>
           <div class="form-field">
             <label for="device-lan">LAN address <span class="optional">optional</span></label>

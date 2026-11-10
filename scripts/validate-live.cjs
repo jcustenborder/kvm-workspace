@@ -66,7 +66,7 @@ async function run() {
       window.__workspaceProbe = {peers,hid,moves};
     });
     await inventory.evaluate(async (url) => {
-      await window.workspace.save({id:'live-device',name:'RM1PE — live validation',lan:url,tailnet:''});
+      await window.workspace.save({id:'live-device',name:'rm1pe-live-validation',lan:url,tailnet:''});
     },endpoint);
     const connected = performance.now();
     const next = electron.waitForEvent('window');
