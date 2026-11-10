@@ -1,12 +1,20 @@
 'use strict';
 const {createServer}=require('node:http');
-const {randomBytes,timingSafeEqual}=require('node:crypto');
-const {mkdir,open}=require('node:fs/promises');
+const {randomBytes,randomUUID,timingSafeEqual}=require('node:crypto');
+const {mkdir,open,writeFile,rename,unlink,readFile}=require('node:fs/promises');
 const {constants}=require('node:fs');
 const path=require('node:path');
 const {validDeviceName}=require('./model.cjs');
 const {keys}=require('./keys.cjs');
 const {document,bodies}=require('./openapi.cjs');
+const swaggerDirectory=path.dirname(require.resolve('swagger-ui-dist/package.json'));
+const docs=new Map([
+  ['/docs',[path.join(__dirname,'api-docs.html'),'text/html']],
+  ['/docs/init.js',[path.join(__dirname,'api-docs.js'),'text/javascript']],
+  ...['swagger-ui.css','swagger-ui-bundle.js','swagger-ui-standalone-preset.js'].map(file=>[
+    `/docs/${file}`,[path.join(swaggerDirectory,file),file.endsWith('.css')?'text/css':'text/javascript']
+  ]),
+]);
 
 /** @param {number} status @param {string} message @returns {Error & {status:number}} */
 function apiError(status,message) {return Object.assign(new Error(message),{status});}
@@ -31,6 +39,17 @@ async function loadApiToken(directory) {
   } finally {await handle.close();}
 }
 
+/** @param {string} directory @returns {Promise<string>} */
+async function rotateApiToken(directory) {
+  await loadApiToken(directory);
+  const token=randomBytes(32).toString('hex');
+  const temporary=path.join(directory,`api-token.${randomUUID()}.tmp`);
+  await writeFile(temporary,token+'\n',{mode:0o600,flag:'wx'});
+  try {await rename(temporary,path.join(directory,'api-token'));}
+  catch(error) {await unlink(temporary);throw error;}
+  return token;
+}
+
 /** @param {import('node:http').IncomingMessage} request @returns {Promise<Record<string,unknown>>} */
 async function readBody(request) {
   let length=0;
@@ -49,25 +68,37 @@ async function readBody(request) {
   return body;
 }
 
-/** @param {{token:string,list:()=>Promise<object[]>,command:(name:string,action:string,body:Record<string,unknown>)=>Promise<object>}} options @returns {import('node:http').Server} */
+/** @param {{token:string|(()=>string),list:()=>Promise<object[]>,command:(name:string,action:string,body:Record<string,unknown>)=>Promise<object>}} options @returns {import('node:http').Server} */
 function createApi({token,list,command}) {
-  const expected=Buffer.from(`Bearer ${token}`);
   const server=createServer(async(request,response)=>{
     response.setHeader('Content-Type','application/json');
     response.setHeader('Cache-Control','no-store');
     response.setHeader('X-Content-Type-Options','nosniff');
     try {
-      if(request.headers.origin!==undefined || !/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(request.headers.host || '')) throw apiError(403,'Only local non-browser clients are allowed.');
+      if(!/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(request.headers.host || '') || (request.headers.origin!==undefined && request.headers.origin!==`http://${request.headers.host}`)) throw apiError(403,'Only local clients and same-origin documentation are allowed.');
+      const url=new URL(request.url,'http://127.0.0.1');
+      const publicRoute=url.pathname==='/openapi.json'||url.pathname==='/docs'||url.pathname.startsWith('/docs/');
+      if(publicRoute) {
+        if(request.method!=='GET') {response.setHeader('Allow','GET');throw apiError(405,'Use GET.');}
+        if(url.search) throw apiError(400,'Documentation does not accept query parameters.');
+        if(url.pathname==='/openapi.json') {response.end(JSON.stringify(document));return;}
+        const asset=docs.get(url.pathname);
+        if(!asset) throw apiError(404,'Unknown documentation asset.');
+        const content=await readFile(asset[0]);
+        response.setHeader('Content-Type',asset[1]);
+        response.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+        response.end(content);return;
+      }
+      const expected=Buffer.from(`Bearer ${typeof token==='function'?token():token}`);
       const supplied=Buffer.from(request.headers.authorization || '');
       if(supplied.length!==expected.length || !timingSafeEqual(supplied,expected)) {
         response.setHeader('WWW-Authenticate','Bearer');throw apiError(401,'A valid bearer token is required.');
       }
-      const url=new URL(request.url,'http://127.0.0.1');
       if([...url.searchParams.keys()].some(key=>url.pathname!=='/sessions'||key!=='state') || (url.search && (url.searchParams.getAll('state').length!==1 || url.searchParams.get('state')!=='open'))) throw apiError(400,'Only /sessions?state=open is supported.');
       let result;
-      if(url.pathname==='/openapi.json'||url.pathname==='/sessions') {
+      if(url.pathname==='/sessions') {
         if(request.method!=='GET') {response.setHeader('Allow','GET');throw apiError(405,'Use GET.');}
-        result=url.pathname==='/openapi.json'?document:(await list()).filter(item=>!url.search || item.state==='open');
+        result=(await list()).filter(item=>!url.search || item.state==='open');
       } else {
         const match=/^\/sessions\/([^/]+)(?:\/(start|end|focus|send-keys|speaker|speaker\/toggle))?$/.exec(url.pathname);
         if(!match) throw apiError(404,'Unknown endpoint.');
@@ -100,4 +131,4 @@ function createApi({token,list,command}) {
   server.setTimeout(120000,socket=>socket.destroy());
   return server;
 }
-module.exports={createApi,loadApiToken,apiError};
+module.exports={createApi,loadApiToken,rotateApiToken,apiError};

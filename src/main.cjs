@@ -8,7 +8,8 @@ const {validateInventory,updateDevices,sameOrigin,certificateMatches,validDevice
 const {serial} = require('./serial.cjs');
 const {createUpdates,updatesEnabled} = require('./updates.cjs');
 const passwords = require('./passwords.cjs');
-const {createApi,loadApiToken,apiError}=require('./api.cjs');
+const {apiError}=require('./api.cjs');
+const {createApiSettings}=require('./api-settings.cjs');
 const {sessionAction}=require('./session-actions.cjs');
 const {runSessionAction,endSession}=require('./session-control.cjs');
 const {keys:apiKeys}=require('./keys.cjs');
@@ -23,6 +24,8 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding');
 const inventoryURL = pathToFileURL(path.join(__dirname,'index.html')).href;
 /** @type {Electron.BrowserWindow | null} */
 let inventory = null;
+/** @type {ReturnType<typeof createApiSettings>} */
+let apiSettings;
 /** @type {{devices:Array<{id:string,name:string,lan:string,tailnet:string}>,pins:Record<string,string>,soundOutputs?:Record<string,boolean>}} */
 let data = {devices:[],pins:{}};
 /** @type {Map<string,{id:string,deviceId:string,name:string,endpoint:string,route:string,window:Electron.BrowserWindow,session:Electron.Session,generation:number,loginReady:Promise<void>}>} */
@@ -73,12 +76,30 @@ function showInventory() {
   void inventory.loadURL(inventoryURL).catch(report);
 }
 
+function showSettings() {
+  const wasOpen=!!inventory;
+  showInventory();
+  if(!wasOpen || inventory.webContents.isLoading()) inventory.webContents.once('did-finish-load',()=>inventory?.webContents.send('settings:show'));
+  else inventory.webContents.send('settings:show');
+}
+
 /** @param {Electron.IpcMainInvokeEvent} event */
 function requireInventory(event) {
   if (!inventory || event.sender !== inventory.webContents || event.senderFrame !== inventory.webContents.mainFrame || event.senderFrame.url !== inventoryURL) {
     throw new Error('This operation is available only from the device inventory.');
   }
 }
+
+ipcMain.handle('settings:status',event=>{requireInventory(event);return apiSettings.status();});
+ipcMain.handle('settings:enabled',async(event,enabled)=>{requireInventory(event);await apiSettings.setEnabled(enabled);});
+ipcMain.handle('settings:copy-token',async event=>{requireInventory(event);clipboard.writeText(await apiSettings.copyToken());});
+ipcMain.handle('settings:regenerate-token',async event=>{requireInventory(event);await apiSettings.regenerateToken();});
+ipcMain.handle('settings:docs',async(event,page)=>{
+  requireInventory(event);
+  if(!['docs','openapi.json'].includes(page)) throw new Error('Unknown API documentation page.');
+  if(!apiSettings.status().running) throw new Error('Enable the web server to browse documentation.');
+  await shell.openExternal(`http://127.0.0.1:53241/${page}`);
+});
 
 /** @param {Electron.IpcMainInvokeEvent} event */
 function requireSession(event) {
@@ -433,20 +454,15 @@ app.whenReady().then(async () => {
   try {
     data = validateInventory(JSON.parse(await readFile(dataPath(),'utf8')));
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  let apiToken,apiServer;
-  try {
-    apiToken=await loadApiToken(app.getPath('userData'));
-    apiServer=createApi({token:apiToken,list:()=>Promise.all(data.devices.map(sessionInfo)),command:apiCommand});
-    await new Promise((resolve,reject)=>{apiServer.once('error',reject);apiServer.listen(53241,'127.0.0.1',resolve);});
-    apiServer.on('error',error=>report(new Error(`Local API failed: ${error.message}`)));
-    app.once('will-quit',()=>{apiServer.closeAllConnections();apiServer.close();});
-    console.info('[workspace] Local API listening on 127.0.0.1:53241');
-  } catch(error) {report(new Error(`Local API could not start: ${error.message}`));}
+  apiSettings=createApiSettings({directory:app.getPath('userData'),list:()=>Promise.all(data.devices.map(sessionInfo)),command:apiCommand,onError:report});
+  try {await apiSettings.initialize();}
+  catch(error) {report(new Error(`Local API could not start: ${error.message}`));}
+  app.once('will-quit',()=>{void apiSettings.close().catch(report);});
   const canUpdate=updatesEnabled(app,process.platform,process.arch,process.resourcesPath);
   let updates;
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     {label:app.name,submenu:[{role:'about'},{id:'updates',label:'Check for Updates…',enabled:canUpdate,click:()=>{void updates?.check(true);}},
-      {label:'Copy API Token',enabled:!!apiToken,click:()=>clipboard.writeText(apiToken)},
+      {id:'settings',label:'Settings…',accelerator:'CommandOrControl+,',click:showSettings},
       {type:'separator'},{role:'services'},{type:'separator'},{role:'hide'},{role:'hideOthers'},{role:'unhide'},{type:'separator'},{role:'quit'}]},
     {label:'File',submenu:[{label:'Device Inventory',accelerator:'CommandOrControl+Shift+D',click:showInventory},{role:'close'}]},
     {label:'Edit',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},

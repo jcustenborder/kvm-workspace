@@ -146,16 +146,31 @@ browser partitions; window closure clears their browser storage and connections.
 
 ### Local REST API
 
-While the app is running, its API listens on **`http://127.0.0.1:53241`**
-(`http://localhost:53241` also works with IPv4). All endpoints require
-`Authorization: Bearer <token>`, including the **OpenAPI 3.1 document** at
-`GET /openapi.json`. Choose **KVM Workspace → Copy API Token** to obtain the token.
-It is generated once and stored with owner-only permissions in
-`~/Library/Application Support/KVM Workspace/api-token`. To rotate it, quit the app,
-remove that file, restart, and update your clients. A malformed or non-private token
-file produces an explicit startup error. A port conflict disables the API for that
-launch and reports an error; the desktop app remains usable. Browser Origin
-requests are rejected; the API does not enable CORS.
+The local web server is **disabled by default**, including upgrades without a
+saved preference. Open **Settings…** from the workspace or **KVM Workspace →
+Settings…** (`⌘,`) and turn on **Enable web server**. It listens on
+**`http://127.0.0.1:53241`** (`http://localhost:53241` also works with IPv4).
+The toggle takes effect immediately and is remembered across restarts. Turning
+it off disconnects HTTP clients and makes every endpoint, including docs,
+inaccessible; desktop KVM sessions remain open.
+
+While enabled, browse **`/openapi.json`** for the OpenAPI 3.1 schema or **`/docs`**
+for bundled, offline-capable Swagger UI. Both are available **without
+authentication**. Session endpoints require `Authorization: Bearer <token>`.
+Choose **Copy token** in Settings, then use **Authorize** in Swagger UI and
+**Try it out** to test calls. Documentation does not retain authorization after
+a reload. Browser calls are allowed only from the server's exact same origin;
+other origins are rejected, and the API does not enable CORS.
+
+**Regenerate token** in Settings immediately invalidates the old token for new
+requests; copy the replacement and update your clients. Token copying and
+regeneration also work with the server off. Tokens are stored with owner-only
+permissions in `~/Library/Application Support/KVM Workspace/api-token` and are
+never displayed in the documentation or embedded in links. The enable preference
+is stored separately in `api-settings.json`. Malformed files, non-private token
+files, port conflicts, and persistence failures produce explicit errors. Settings
+shows actual listener status and offers a retry after startup failure; the desktop
+app remains usable.
 
 Device names universally follow Kubernetes-style DNS-label rules: **1–63 lowercase
 letters, digits or hyphens**, starting and ending with a letter or digit, unique
@@ -176,13 +191,14 @@ preferences but changes the API URL immediately, including for open windows.
 | PUT | `/sessions/{name}/speaker` | `{"enabled":false}` to disable playback |
 | POST | `/sessions/{name}/speaker/toggle` | Toggle and return the confirmed resulting state |
 | GET | `/openapi.json` | Full schemas, supported key codes, authentication and errors |
+| GET | `/docs` | Public interactive Swagger UI; authorize to test session calls |
 
-After copying the token from the menu:
+After enabling the server and copying the token from Settings:
 
 ```sh
 TOKEN="$(pbpaste)"
 curl --fail-with-body -H "Authorization: Bearer $TOKEN" http://127.0.0.1:53241/sessions
-curl --fail-with-body -H "Authorization: Bearer $TOKEN" http://127.0.0.1:53241/openapi.json
+curl --fail-with-body http://127.0.0.1:53241/openapi.json
 curl --fail-with-body -X POST -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"route":"lan"}' \
   http://127.0.0.1:53241/sessions/jeremy-laptop-x/start

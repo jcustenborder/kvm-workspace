@@ -5,7 +5,7 @@ const {mkdtemp,readFile,writeFile,stat,chmod,rm}=require('node:fs/promises');
 const {tmpdir}=require('node:os');
 const path=require('node:path');
 const {request}=require('node:http');
-const {createApi,loadApiToken}=require('../src/api.cjs');
+const {createApi,loadApiToken,rotateApiToken}=require('../src/api.cjs');
 
 test('token is persistent, private and corrupt tokens fail instead of silently rotating',async()=>{
   const directory=await mkdtemp(path.join(tmpdir(),'kvm-api-'));
@@ -16,6 +16,10 @@ test('token is persistent, private and corrupt tokens fail instead of silently r
     const file=path.join(directory,'api-token');
     assert.equal((await stat(file)).mode&0o777,0o600);
     assert.equal((await readFile(file,'utf8')).trim(),token);
+    const rotated=await rotateApiToken(directory);
+    assert.notEqual(rotated,token);
+    assert.equal(await loadApiToken(directory),rotated);
+    assert.equal((await stat(file)).mode&0o777,0o600);
     await chmod(file,0o644);
     await assert.rejects(loadApiToken(directory),/owner-only/);
     await chmod(file,0o600);
@@ -24,7 +28,7 @@ test('token is persistent, private and corrupt tokens fail instead of silently r
   } finally {await rm(directory,{recursive:true,force:true});}
 });
 
-test('HTTP API authenticates every route, validates before dispatch and emits a usable OpenAPI contract',async t=>{
+test('HTTP API exposes public docs, authenticates session routes and validates before dispatch',async t=>{
   const token='a'.repeat(64);
   const records=[{name:'laptop',state:'open',route:'lan',speaker:{enabled:false}},{name:'desktop',state:'closed',route:null,speaker:{enabled:null}}];
   let commands=0;
@@ -39,7 +43,13 @@ test('HTTP API authenticates every route, validates before dispatch and emits a 
   const base=`http://127.0.0.1:${server.address().port}`;
   const call=(url,method='GET',body,headers={})=>fetch(base+url,{method,headers:{authorization:`Bearer ${token}`,...(body===undefined?{}:{'content-type':'application/json'}),...headers},body:body===undefined?undefined:JSON.stringify(body)});
   assert.equal((await fetch(base+'/sessions')).status,401);
-  assert.equal((await fetch(base+'/openapi.json')).status,401);
+  assert.equal((await fetch(base+'/openapi.json')).status,200);
+  assert.equal((await fetch(base+'/docs')).status,200);
+  for(const asset of ['swagger-ui.css','swagger-ui-bundle.js','swagger-ui-standalone-preset.js','init.js']) assert.equal((await fetch(base+'/docs/'+asset)).status,200);
+  assert.equal((await fetch(base+'/docs/unknown.js')).status,404);
+  assert.equal((await fetch(base+'/docs',{method:'POST'})).status,405);
+  assert.equal((await call('/sessions','GET',undefined,{origin:base})).status,200);
+  for(const origin of ['null','http://localhost:1',base+'0','https://evil.example']) assert.equal((await call('/sessions','GET',undefined,{origin})).status,403);
   assert.equal((await call('/sessions','GET',undefined,{authorization:'Bearer wrong'})).status,401);
   assert.equal((await call('/sessions','GET',undefined,{authorization:`Bearer ${'b'.repeat(64)}`})).status,401);
   assert.equal((await call('/sessions/laptop/speaker/toggle','POST',undefined,{authorization:''})).status,401);
@@ -72,8 +82,22 @@ test('HTTP API authenticates every route, validates before dispatch and emits a 
   const document=await (await call('/openapi.json')).json();
   assert.equal(document.openapi,'3.1.0');
   assert.deepEqual(document.security,[{bearerAuth:[]}]);
+  assert.deepEqual(document.paths['/openapi.json'].get.security,[]);
   assert.equal(document.components.securitySchemes.bearerAuth.scheme,'bearer');
   for(const route of ['start','end','focus','send-keys','speaker/toggle']) assert(document.paths[`/sessions/{name}/${route}`].post.responses['200']);
   assert.equal(document.paths['/sessions/{name}/start'].post.requestBody.required,true);
   assert.deepEqual(document.paths['/sessions/{name}/start'].post.requestBody.content['application/json'].schema.required,['route']);
+});
+
+test('authentication reads the current token on each request',async t=>{
+  let token='a'.repeat(64);
+  const server=createApi({token:()=>token,list:async()=>[],command:async()=>({})});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{server.closeAllConnections();server.close(resolve);}));
+  const url=`http://127.0.0.1:${server.address().port}/sessions`;
+  const call=value=>fetch(url,{headers:{authorization:`Bearer ${value}`}});
+  assert.equal((await call(token)).status,200);
+  token='b'.repeat(64);
+  assert.equal((await call('a'.repeat(64))).status,401);
+  assert.equal((await call(token)).status,200);
 });
