@@ -18,12 +18,19 @@ async function run() {
   const cert=await readFile(certFile),key=await readFile(keyFile);
   const html=`<!doctype html><title>API fixture</title>
     <button class="volume-icon"><svg><use href="#gl-kvm-sound-off"/></svg></button>
+    <div class="remote-device-setting">
+      <div class="item flex-btw"><div class="label text-2">Show Local Cursor</div><button role="switch" aria-checked="true"></button></div>
+      <div class="item flex-btw"><div class="label text-2">Mouse Jiggle</div><button id="mouse-jiggle" role="switch" aria-checked="false"></button></div>
+    </div>
+    <div class="ocr-box"><button id="ocr">Capture</button></div><canvas id="gl-kvm-ocr-canvas" style="display:none"></canvas>
     <div id="stream-window" class="stream-window-inited"><div id="stream-box" tabindex="0">Remote input</div></div>
     <script>
-    window.events=[];window.output=false;window.blockSpeaker=false;
+    window.events=[];window.output=false;window.blockSpeaker=false;window.blockMouseJiggle=false;window.mouseJiggleClicks=0;window.blockOcr=false;window.ocrClicks=0;
     if(location.search.includes('warming'))document.querySelector('#stream-window').classList.remove('stream-window-inited');
     window.setOutput=value=>{output=value;document.querySelector('use').setAttribute('href',value?'#gl-kvm-sound-full':'#gl-kvm-sound-off');};
     document.querySelector('.volume-icon').onclick=()=>{if(!blockSpeaker)queueMicrotask(()=>setOutput(!output));};
+    document.querySelector('#mouse-jiggle').onclick=event=>{mouseJiggleClicks++;const control=event.currentTarget;if(!blockMouseJiggle)queueMicrotask(()=>control.setAttribute('aria-checked',control.getAttribute('aria-checked')==='false'));};
+    document.querySelector('#ocr').onclick=()=>{ocrClicks++;if(!blockOcr)queueMicrotask(()=>document.querySelector('#gl-kvm-ocr-canvas').style.display='block');};
     for(const type of ['keydown','keyup'])document.querySelector('#stream-box').addEventListener(type,event=>events.push({type,code:event.code,meta:event.metaKey,ctrl:event.ctrlKey,keyCode:event.keyCode}));
     </script>`;
   const fixture=createServer({cert,key},(_request,response)=>response.end(html));
@@ -86,7 +93,7 @@ async function run() {
       return {status:response.status,body:await response.json()};
     };
     assert.equal((await fetch('http://127.0.0.1:53241/sessions')).status,401);
-    assert.deepEqual((await call('/sessions')).body,[{name:'laptop',state:'closed',route:null,speaker:{enabled:null}},{name:'desktop',state:'closed',route:null,speaker:{enabled:null}}]);
+    assert.deepEqual((await call('/sessions')).body,[{name:'laptop',state:'closed',route:null,speaker:{enabled:null},mouseJiggle:{enabled:null}},{name:'desktop',state:'closed',route:null,speaker:{enabled:null},mouseJiggle:{enabled:null}}]);
     assert.equal((await call('/sessions/laptop/start','POST',{})).status,400);
     const next=electron.waitForEvent('window');
     assert.equal((await call('/sessions/laptop/start','POST',{route:'lan'})).status,200);
@@ -110,6 +117,26 @@ async function run() {
     ]);
     assert.deepEqual(await desktop.evaluate(()=>events),[]);
     assert.equal(await electron.evaluate(({BrowserWindow})=>BrowserWindow.getFocusedWindow()?.id??null),focusedBefore,'Sending keys must not steal native focus');
+    assert.equal((await call('/sessions/laptop')).body.mouseJiggle.enabled,false);
+    assert.deepEqual((await call('/sessions/laptop/mouse-jiggle/toggle','POST')).body,{enabled:true});
+    assert.equal((await call('/sessions/laptop')).body.mouseJiggle.enabled,true);
+    await laptop.locator('#mouse-jiggle').click();
+    assert.equal((await call('/sessions/laptop')).body.mouseJiggle.enabled,false,'Read live manual Mouse Jiggle changes');
+    const jiggles=await Promise.all([call('/sessions/laptop/mouse-jiggle/toggle','POST'),call('/sessions/laptop/mouse-jiggle/toggle','POST')]);
+    assert.deepEqual(jiggles.map(result=>result.body.enabled),[true,false]);
+    await laptop.evaluate(()=>{blockMouseJiggle=true;});
+    const jiggleClicks=await laptop.evaluate(()=>mouseJiggleClicks);
+    assert.equal((await call('/sessions/laptop/mouse-jiggle/toggle','POST')).status,409);
+    assert.equal(await laptop.evaluate(()=>mouseJiggleClicks),jiggleClicks+1,'A failed Mouse Jiggle toggle must click only once');
+    await laptop.evaluate(()=>{blockMouseJiggle=false;document.querySelector('#mouse-jiggle').closest('.item').querySelector('.label').textContent='Unknown';});
+    assert.equal((await call('/sessions/laptop')).body.mouseJiggle.enabled,null);
+    assert.equal((await call('/sessions/laptop/mouse-jiggle/toggle','POST')).status,409);
+    await laptop.evaluate(()=>{document.querySelector('#mouse-jiggle').closest('.item').querySelector('.label').textContent='Mouse Jiggle';});
+    assert.deepEqual((await call('/sessions/laptop/ocr','POST')).body,{triggered:true});
+    assert.equal(await laptop.evaluate(()=>ocrClicks),1);
+    await laptop.evaluate(()=>{document.querySelector('#gl-kvm-ocr-canvas').style.display='none';blockOcr=true;});
+    assert.equal((await call('/sessions/laptop/ocr','POST')).status,409);
+    assert.equal(await laptop.evaluate(()=>ocrClicks),2,'A failed OCR trigger must click only once');
     assert.deepEqual((await call('/sessions/laptop/speaker/toggle','POST')).body,{enabled:true});
     assert.equal((await call('/sessions/laptop')).body.speaker.enabled,true);
     assert.equal(JSON.parse(await readFile(savedFile,'utf8')).soundOutputs.a,true);
@@ -123,12 +150,18 @@ async function run() {
     await laptop.evaluate(()=>{blockSpeaker=true;});
     assert.equal((await call('/sessions/laptop/speaker/toggle','POST')).status,409);
     assert.equal(JSON.parse(await readFile(savedFile,'utf8')).soundOutputs.a,true,'Unconfirmed changes must not overwrite saved intent');
-    await laptop.evaluate(()=>{blockSpeaker=false;document.querySelector('#stream-window').classList.add('is-direct');});
+    await laptop.evaluate(()=>{blockSpeaker=false;blockOcr=false;document.querySelector('#gl-kvm-ocr-canvas').style.display='none';document.querySelector('#stream-window').classList.add('is-direct');});
     assert.equal((await call('/sessions/laptop')).body.speaker.enabled,null);
+    assert.equal((await call('/sessions/laptop')).body.mouseJiggle.enabled,false);
+    assert.deepEqual((await call('/sessions/laptop/mouse-jiggle/toggle','POST')).body,{enabled:true});
+    assert.deepEqual((await call('/sessions/laptop/ocr','POST')).body,{triggered:true});
     assert.equal((await call('/sessions/laptop/speaker/toggle','POST')).status,409);
     await laptop.evaluate(()=>document.querySelector('#stream-window').classList.remove('is-direct'));
     await laptop.goto(endpoint+'/?warming=1');
     assert.equal((await call('/sessions/laptop/speaker/toggle','POST')).status,409);
+    assert.equal((await call('/sessions/laptop')).body.mouseJiggle.enabled,null);
+    assert.equal((await call('/sessions/laptop/mouse-jiggle/toggle','POST')).status,409);
+    assert.equal((await call('/sessions/laptop/ocr','POST')).status,409);
     await laptop.evaluate(()=>document.querySelector('#stream-window').classList.add('stream-window-inited'));
     await laptop.waitForFunction(()=>output,null,{timeout:3000});
     assert.equal((await call('/sessions/laptop')).body.speaker.enabled,true,'A premature API request must not suppress saved-state restoration');
@@ -147,13 +180,15 @@ async function run() {
     assert.equal((await call('/sessions/renamed-laptop/end','POST')).body.state,'closed');
     await childClosed;
     assert.equal((await call('/sessions/renamed-laptop/end','POST')).status,200);
-    for(const action of ['focus','send-keys','speaker/toggle']) assert.equal((await call(`/sessions/renamed-laptop/${action}`,'POST',action==='send-keys'?{keys:['KeyD']}:undefined)).status,409);
+    for(const action of ['focus','send-keys','speaker/toggle','mouse-jiggle/toggle','ocr']) assert.equal((await call(`/sessions/renamed-laptop/${action}`,'POST',action==='send-keys'?{keys:['KeyD']}:undefined)).status,409);
     assert.equal((await call('/sessions/renamed-laptop')).body.speaker.enabled,null);
+    assert.equal((await call('/sessions/renamed-laptop')).body.mouseJiggle.enabled,null);
     assert.equal((await call('/sessions/missing/end','POST')).status,404);
     await electron.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().find(win=>win.getTitle().startsWith('desktop')).webContents.executeJavaScriptInIsolatedWorld(999,[{code:'void(window.__workspaceSessionAction=()=>new Promise(()=>{}))'}]));
     const list=await call('/sessions');
     assert.equal(list.status,200,'An unresolved renderer must not hang the complete session list');
     assert.equal(list.body.find(item=>item.name==='desktop').speaker.enabled,null);
+    assert.equal(list.body.find(item=>item.name==='desktop').mouseJiggle.enabled,null);
     assert.equal((await call('/sessions/desktop/send-keys','POST',{keys:['KeyD']})).status,409);
     assert.equal((await call('/sessions/desktop/end','POST')).status,409,'Failed input release must be explicit');
     assert.equal((await call('/sessions/desktop')).body.state,'closed','End must disconnect even an unresponsive session');
