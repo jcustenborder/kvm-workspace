@@ -29,7 +29,7 @@ async function run() {
     if(location.search.includes('warming'))document.querySelector('#stream-window').classList.remove('stream-window-inited');
     window.setOutput=value=>{output=value;document.querySelector('use').setAttribute('href',value?'#gl-kvm-sound-full':'#gl-kvm-sound-off');};
     document.querySelector('.volume-icon').onclick=()=>{if(!blockSpeaker)queueMicrotask(()=>setOutput(!output));};
-    document.querySelector('#mouse-jiggle').onclick=event=>{mouseJiggleClicks++;if(!blockMouseJiggle)queueMicrotask(()=>event.currentTarget.setAttribute('aria-checked',event.currentTarget.getAttribute('aria-checked')==='false'));};
+    document.querySelector('#mouse-jiggle').onclick=event=>{mouseJiggleClicks++;const control=event.currentTarget;if(!blockMouseJiggle)queueMicrotask(()=>control.setAttribute('aria-checked',control.getAttribute('aria-checked')==='false'));};
     document.querySelector('#ocr').onclick=()=>{ocrClicks++;if(!blockOcr)queueMicrotask(()=>document.querySelector('#gl-kvm-ocr-canvas').style.display='block');};
     for(const type of ['keydown','keyup'])document.querySelector('#stream-box').addEventListener(type,event=>events.push({type,code:event.code,meta:event.metaKey,ctrl:event.ctrlKey,keyCode:event.keyCode}));
     </script>`;
